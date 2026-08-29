@@ -1,0 +1,37 @@
+# Node / pnpm
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+apps/mobile/android/local.properties
+apps/mobile/android/app/.cxx/
+apps/mobile/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+
+# Rust / Tauri
+target/
+apps/desktop/src-tauri/gen/
+
+# TypeScript incremental compiler state
+*.tsbuildinfo
+
+# Editors / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Local review and temporary files
+.doc-review/
+.tmp/
+.unused-test-data/
+apps/mobile/test/failures/
+*.log
+.devpilot-data/

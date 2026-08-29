@@ -1,0 +1,29 @@
+{
+  "name": "devpilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DevPilot monorepo - Touch. Tell. Test.",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=24.12.0 <25",
+    "pnpm": "11.19.0"
+  },
+  "scripts": {
+    "dev:agent": "pnpm --filter @devpilot/agent dev",
+    "dev:desktop": "pnpm --filter @devpilot/desktop dev",
+    "dev:desktop:web": "pnpm --filter @devpilot/desktop dev:web",
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "pnpm format:check && pnpm typecheck && pnpm test && pnpm build",
+    "toolchain:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-toolchain.ps1"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "prettier": "3.9.6",
+    "tsx": "4.23.12",
+    "typescript": "7.0.2"
+  }
+}

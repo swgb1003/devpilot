@@ -1,0 +1,17 @@
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+
+# Generated Flutter / Android output
+apps/mobile/.dart_tool/
+apps/mobile/build/
+apps/mobile/android/app/.cxx/
+
+# Generated Rust / Tauri output
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
+# Local review and temporary files
+.doc-review/
+.tmp/

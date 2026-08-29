@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default M0 capability set",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
