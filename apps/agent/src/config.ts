@@ -2,8 +2,9 @@ import { randomBytes } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 
 export interface AgentConfig {
-  readonly host: '127.0.0.1';
+  readonly host: '127.0.0.1' | '0.0.0.0';
   readonly port: number;
+  readonly pairingPort: number;
   readonly dataDirectory: string;
   readonly databasePath: string;
   readonly activityRetentionDays: number;
@@ -39,6 +40,17 @@ export function loadAgentConfig(
     throw new Error('DEVPILOT_AGENT_PORT must be between 1 and 65535.');
   }
 
+  const pairingPort = parseInteger(
+    environment.DEVPILOT_PAIRING_PORT,
+    47_832,
+    'DEVPILOT_PAIRING_PORT',
+  );
+  if (pairingPort < 1 || pairingPort > 65_535 || pairingPort === port) {
+    throw new Error(
+      'DEVPILOT_PAIRING_PORT must be a valid port different from DEVPILOT_AGENT_PORT.',
+    );
+  }
+
   const activityRetentionDays = parseInteger(
     environment.DEVPILOT_ACTIVITY_RETENTION_DAYS,
     30,
@@ -67,6 +79,7 @@ export function loadAgentConfig(
   return {
     host: configuredHost,
     port,
+    pairingPort,
     dataDirectory,
     databasePath: join(dataDirectory, 'devpilot.sqlite3'),
     activityRetentionDays,

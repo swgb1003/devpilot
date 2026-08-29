@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.devpilot.desktop",
   "build": {
-    "beforeDevCommand": "pnpm dev:web",
-    "beforeBuildCommand": "pnpm --filter @devpilot/contracts build && pnpm --filter @devpilot/agent build && pnpm build:web",
+    "beforeDevCommand": "corepack pnpm dev:web",
+    "beforeBuildCommand": "corepack pnpm --filter @devpilot/contracts build && corepack pnpm --filter @devpilot/agent build && corepack pnpm build:web",
     "devUrl": "http://127.0.0.1:5173",
     "frontendDist": "../dist"
   },

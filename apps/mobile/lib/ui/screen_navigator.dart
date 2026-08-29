@@ -1,5 +1,6 @@
 import 'dart:ui' show ImageFilter;
 
+import 'package:devpilot_mobile/pairing/pairing_screen.dart';
 import 'package:flutter/material.dart';
 
 const _designWidth = 941.0;
@@ -63,7 +64,7 @@ const _screenSpecs = <DevPilotScreen, _ScreenSpec>{
   ),
   DevPilotScreen.pcPairing: _ScreenSpec(
     asset: 'assets/screens/02_pc_pairing.png',
-    verticalGaps: [110, 300, 1160, 1460],
+    verticalGaps: [110, 360, 1160, 1460],
     hotspots: [
       _Hotspot(
         id: 'back',
@@ -340,7 +341,12 @@ const _screenSpecs = <DevPilotScreen, _ScreenSpec>{
 };
 
 class DevPilotScreenNavigator extends StatefulWidget {
-  const DevPilotScreenNavigator({super.key});
+  const DevPilotScreenNavigator({
+    super.key,
+    this.initialScreen = DevPilotScreen.welcome,
+  });
+
+  final DevPilotScreen initialScreen;
 
   @override
   State<DevPilotScreenNavigator> createState() =>
@@ -502,8 +508,14 @@ class _ResponsiveDesignScreen extends StatelessWidget {
 }
 
 class _DevPilotScreenNavigatorState extends State<DevPilotScreenNavigator> {
-  DevPilotScreen _current = DevPilotScreen.welcome;
+  late DevPilotScreen _current;
   final List<DevPilotScreen> _history = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _current = widget.initialScreen;
+  }
 
   void _open(DevPilotScreen target) {
     if (target == _current) return;
@@ -525,6 +537,16 @@ class _DevPilotScreenNavigatorState extends State<DevPilotScreenNavigator> {
 
   @override
   Widget build(BuildContext context) {
+    if (_current == DevPilotScreen.pcPairing) {
+      return PairingScreen(
+        onBack: _goBack,
+        onPaired: () {
+          setState(() {
+            _current = DevPilotScreen.projectSelect;
+          });
+        },
+      );
+    }
     final spec = _screenSpecs[_current]!;
     return PopScope(
       canPop: false,

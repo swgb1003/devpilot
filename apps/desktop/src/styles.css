@@ -177,6 +177,73 @@ h2 {
   margin-top: 20px;
 }
 
+.pairing-card {
+  margin-top: 20px;
+}
+
+.pairing-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+  gap: 28px;
+  align-items: center;
+  padding: 28px 30px;
+}
+
+.pairing-copy > p:first-child {
+  max-width: 600px;
+  color: #c9d5ea;
+  line-height: 1.6;
+}
+
+.pairing-copy > button {
+  margin-top: 10px;
+}
+
+.pairing-qr,
+.pairing-qr-placeholder {
+  width: 220px;
+  height: 220px;
+  justify-self: end;
+  border: 1px solid #2f81f7;
+  border-radius: 18px;
+  background: #fff;
+  padding: 10px;
+}
+
+.pairing-qr-placeholder {
+  display: grid;
+  place-items: center;
+  color: #55709c;
+  background: linear-gradient(145deg, #1a2434, #0e131c);
+  font-size: 34px;
+  font-weight: 800;
+}
+
+.device-request {
+  display: grid;
+  gap: 4px;
+  margin: 18px 0 4px;
+  padding: 14px 16px;
+  border: 1px solid #278f68;
+  border-radius: 12px;
+  background: rgb(61 220 151 / 8%);
+}
+
+.device-request span,
+.pairing-expiry {
+  color: #8d9ab2;
+  font-size: 14px;
+}
+
+.pairing-expiry,
+.pairing-error {
+  margin: 14px 0 0;
+}
+
+.pairing-error {
+  color: #f7a4af;
+}
+
 .probe-row {
   gap: 24px;
 }
@@ -293,5 +360,16 @@ h2 {
     align-items: flex-start;
     padding-top: 16px;
     padding-bottom: 16px;
+  }
+
+  .pairing-content {
+    grid-template-columns: 1fr;
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+
+  .pairing-qr,
+  .pairing-qr-placeholder {
+    justify-self: start;
   }
 }

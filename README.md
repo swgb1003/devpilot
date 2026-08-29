@@ -2,7 +2,7 @@
 
 DevPilot turns an Android device running a development Flutter app into a safe remote control for an AI-assisted edit, validation, and Hot Reload loop.
 
-This repository is currently at **M2: Agent core**. Product behavior is defined by `docs/DevPilot_開発仕様書_v1.0.docx`; M2 adds persistent local state, authenticated Desktop APIs, one-time WebSocket tickets, Activity history, and the complete 12-screen Mobile visual flow. QR pairing and real edit/test execution remain later milestones.
+This repository is currently at **M3: Pairing slice**. Product behavior is defined by `docs/DevPilot_開発仕様書_v1.0.docx`; M3 adds real QR pairing, a Mobile camera scanner, Desktop approval, certificate-fingerprint pinning, Android Keystore token storage, reconnect, and unpair. Project registration and edit/test execution remain later milestones.
 
 ## Workspace
 
@@ -82,6 +82,12 @@ flutter test
 Set-Location ../desktop/src-tauri
 cargo check --locked
 ```
+
+## M3 pairing
+
+Start the Agent, then open DevPilot Desktop and choose **Show pairing QR**. DevPilot Mobile scans that one-time QR, verifies the Agent certificate fingerprint, and waits for the Desktop approval action. The Agent keeps its Desktop control API on `127.0.0.1:47831` and opens its TLS-only Mobile pairing API on private LAN interfaces at port `47832` by default.
+
+The pairing QR is valid for 120 seconds and one successful confirmation. Five invalid nonce attempts expire it. The Mobile access and refresh tokens are issued only after Desktop approval, then stored in Android Keystore. Use **この端末の接続情報を削除** on Mobile to revoke the Agent-side tokens and delete local credentials.
 
 ## M2 Agent API
 

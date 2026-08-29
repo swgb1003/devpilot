@@ -76,6 +76,9 @@ export const activityKinds = [
   'config.loaded',
   'storage.migrated',
   'pairing.created',
+  'pairing.confirmed',
+  'pairing.approved',
+  'pairing.revoked',
   'project.registered',
   'session.started',
   'session.stopped',
@@ -106,6 +109,12 @@ export const devPilotErrorCodes = [
   'AUTH_REQUIRED',
   'AUTH_INVALID',
   'AUTH_TICKET_INVALID',
+  'AUTH_TOKEN_EXPIRED',
+  'PAIRING_INVALID',
+  'PAIRING_EXPIRED',
+  'PAIRING_REPLAYED',
+  'PAIRING_PENDING',
+  'PAIRING_DENIED',
   'REQUEST_INVALID',
   'ROUTE_NOT_FOUND',
   'METHOD_NOT_ALLOWED',
@@ -140,6 +149,47 @@ export interface AgentPublicConfig {
   readonly activityRetentionDays: number;
   readonly schemaVersion: number;
   readonly websocketPath: '/api/v1/events';
+}
+
+export interface PairingQrPayload {
+  readonly scheme: 'devpilot';
+  readonly version: typeof protocolVersion;
+  readonly pairingId: string;
+  readonly hostCandidates: readonly string[];
+  readonly port: number;
+  readonly nonce: string;
+  readonly expiresAt: string;
+  readonly serverPublicKeyFingerprint: string;
+}
+
+export type PairingStatus =
+  'awaiting_confirmation' | 'awaiting_approval' | 'approved' | 'denied' | 'expired' | 'revoked';
+
+export interface PairingChallenge {
+  readonly id: string;
+  readonly status: PairingStatus;
+  readonly qrPayload: PairingQrPayload;
+  readonly expiresAt: string;
+}
+
+export interface PairingPendingDevice {
+  readonly displayName: string;
+  readonly publicKey: string;
+}
+
+export interface PairingState {
+  readonly id: string;
+  readonly status: PairingStatus;
+  readonly expiresAt: string;
+  readonly device?: PairingPendingDevice;
+}
+
+export interface DeviceTokens {
+  readonly deviceId: string;
+  readonly accessToken: string;
+  readonly accessTokenExpiresAt: string;
+  readonly refreshToken: string;
+  readonly refreshTokenExpiresAt: string;
 }
 
 export interface WsTicket {

@@ -21,7 +21,9 @@ void main() {
 }
 
 class DevPilotApp extends StatelessWidget {
-  const DevPilotApp({super.key});
+  const DevPilotApp({super.key, this.initialScreen = DevPilotScreen.welcome});
+
+  final DevPilotScreen initialScreen;
 
   @override
   Widget build(BuildContext context) {
@@ -37,7 +39,7 @@ class DevPilotApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const DevPilotScreenNavigator(),
+      home: DevPilotScreenNavigator(initialScreen: initialScreen),
     );
   }
 }

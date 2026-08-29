@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useState } from 'react';
+import QRCode from 'qrcode';
 
 type ProbeStatus = 'available' | 'unavailable' | 'degraded';
 
@@ -35,6 +36,28 @@ interface AgentHealth {
   readonly version: string;
 }
 
+interface PairingQrPayload {
+  readonly pairingId: string;
+  readonly hostCandidates: readonly string[];
+  readonly port: number;
+  readonly expiresAt: string;
+  readonly serverPublicKeyFingerprint: string;
+}
+
+interface PairingChallenge {
+  readonly id: string;
+  readonly status: 'awaiting_confirmation' | 'awaiting_approval' | 'approved';
+  readonly expiresAt: string;
+  readonly qrPayload: PairingQrPayload;
+}
+
+interface PairingState {
+  readonly id: string;
+  readonly status: string;
+  readonly expiresAt: string;
+  readonly device?: { readonly displayName: string; readonly publicKey: string };
+}
+
 const agentEndpoint = 'http://127.0.0.1:47831';
 
 function isTauriRuntime(): boolean {
@@ -55,6 +78,11 @@ export function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [report, setReport] = useState<M1ProbeReport | undefined>();
   const [health, setHealth] = useState<AgentHealth | undefined>();
+  const [pairing, setPairing] = useState<PairingChallenge | undefined>();
+  const [pairingState, setPairingState] = useState<PairingState | undefined>();
+  const [qrImage, setQrImage] = useState<string | undefined>();
+  const [pairingError, setPairingError] = useState<string | undefined>();
+  const [isPairingLoading, setIsPairingLoading] = useState(false);
 
   const refreshReport = useCallback(async () => {
     setIsLoading(true);
@@ -105,6 +133,86 @@ export function App() {
     void refreshSidecarStatus();
   }, [refreshReport, refreshSidecarStatus]);
 
+  const refreshPairing = useCallback(async (pairingId: string) => {
+    const response = await fetch(`${agentEndpoint}/api/v1/pairings/${pairingId}`);
+    if (!response.ok) {
+      throw new Error(`Pairing status request failed with HTTP ${response.status}.`);
+    }
+    const body = (await response.json()) as { data: PairingState };
+    setPairingState(body.data);
+    return body.data;
+  }, []);
+
+  useEffect(() => {
+    if (!pairing || pairingState?.status === 'approved') {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      void refreshPairing(pairing.id).catch((caughtError: unknown) => {
+        setPairingError(
+          caughtError instanceof Error ? caughtError.message : 'Unable to refresh pairing status.',
+        );
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [pairing, pairingState?.status, refreshPairing]);
+
+  const createPairing = useCallback(async () => {
+    setIsPairingLoading(true);
+    setPairingError(undefined);
+    try {
+      const response = await fetch(`${agentEndpoint}/api/v1/pairings`, { method: 'POST' });
+      if (!response.ok) {
+        const body = (await response.json()) as { error?: { message?: string } };
+        throw new Error(
+          body.error?.message ?? `Pairing request failed with HTTP ${response.status}.`,
+        );
+      }
+      const body = (await response.json()) as { data: PairingChallenge };
+      const image = await QRCode.toDataURL(JSON.stringify(body.data.qrPayload), {
+        errorCorrectionLevel: 'M',
+        margin: 1,
+        width: 320,
+      });
+      setPairing(body.data);
+      setPairingState({
+        id: body.data.id,
+        status: body.data.status,
+        expiresAt: body.data.expiresAt,
+      });
+      setQrImage(image);
+    } catch (caughtError) {
+      setPairingError(
+        caughtError instanceof Error ? caughtError.message : 'Unable to create a pairing QR code.',
+      );
+    } finally {
+      setIsPairingLoading(false);
+    }
+  }, []);
+
+  const approvePairing = useCallback(async () => {
+    if (!pairing) {
+      return;
+    }
+    setIsPairingLoading(true);
+    setPairingError(undefined);
+    try {
+      const response = await fetch(`${agentEndpoint}/api/v1/pairings/${pairing.id}/approve`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        throw new Error(`Pairing approval failed with HTTP ${response.status}.`);
+      }
+      await refreshPairing(pairing.id);
+    } catch (caughtError) {
+      setPairingError(
+        caughtError instanceof Error ? caughtError.message : 'Unable to approve the mobile device.',
+      );
+    } finally {
+      setIsPairingLoading(false);
+    }
+  }, [pairing, refreshPairing]);
+
   async function startSidecar(): Promise<void> {
     try {
       setAgentStatus(await invoke<AgentStatus>('agent_start'));
@@ -136,7 +244,7 @@ export function App() {
           DP
         </div>
         <div>
-          <p className="eyebrow">M2 Agent Core</p>
+          <p className="eyebrow">M3 Pairing Slice</p>
           <h1 id="page-title">DevPilot Desktop</h1>
           <p className="tagline">Local state, authenticated APIs, Activity, and events.</p>
         </div>
@@ -190,6 +298,69 @@ export function App() {
               {isLoading ? 'Refreshing…' : 'Refresh core status'}
             </button>
           </div>
+        </div>
+      </section>
+
+      <section className="status-card pairing-card" aria-labelledby="pairing-title">
+        <div className="status-heading">
+          <div>
+            <p className="eyebrow">Secure pairing</p>
+            <h2 id="pairing-title">Connect an Android device</h2>
+          </div>
+          <span className={`status-pill ${pairingState?.status === 'approved' ? 'is-ready' : ''}`}>
+            {pairingState?.status === 'approved' ? 'Paired' : '120 sec QR'}
+          </span>
+        </div>
+        <div className="pairing-content">
+          <div className="pairing-copy">
+            <p>
+              Create a one-time QR code, then scan it in DevPilot Mobile on the same private LAN.
+              The phone verifies this PC&apos;s certificate fingerprint before it asks for approval.
+            </p>
+            {pairingState?.device ? (
+              <div className="device-request">
+                <strong>{pairingState.device.displayName}</strong>
+                <span>
+                  {pairingState.status === 'awaiting_approval'
+                    ? 'This device is requesting access.'
+                    : 'Secure token issued to this device.'}
+                </span>
+              </div>
+            ) : null}
+            {pairingState?.status === 'awaiting_approval' ? (
+              <button
+                className="primary-button"
+                disabled={isPairingLoading}
+                type="button"
+                onClick={() => void approvePairing()}
+              >
+                Approve this device
+              </button>
+            ) : (
+              <button
+                className="primary-button"
+                disabled={isPairingLoading}
+                type="button"
+                onClick={() => void createPairing()}
+              >
+                {isPairingLoading ? 'Creating…' : 'Show pairing QR'}
+              </button>
+            )}
+            {pairing ? (
+              <p className="muted pairing-expiry">
+                Expires {new Date(pairing.expiresAt).toLocaleTimeString()} ·{' '}
+                {pairing.qrPayload.hostCandidates.join(', ')}: {pairing.qrPayload.port}
+              </p>
+            ) : null}
+            {pairingError ? <p className="pairing-error">{pairingError}</p> : null}
+          </div>
+          {qrImage && pairingState?.status !== 'approved' ? (
+            <img className="pairing-qr" src={qrImage} alt="DevPilot pairing QR code" />
+          ) : (
+            <div className="pairing-qr-placeholder" aria-hidden="true">
+              QR
+            </div>
+          )}
         </div>
       </section>
 
@@ -253,8 +424,8 @@ export function App() {
       </section>
 
       <p className="next-step">
-        M2 persists the Agent state and protects Desktop APIs. QR pairing and Mobile credentials
-        remain the next M3 security slice.
+        M3 adds a real pairing boundary. Project and development-session setup remain the next M4
+        slice.
       </p>
     </main>
   );

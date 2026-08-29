@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { get as httpsGet } from 'node:https';
+import { randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 
@@ -145,6 +146,77 @@ test('M2 WebSocket ticket is one-time and streams Activity events', async (conte
   assert.equal(event.payload.message, 'stream me');
 });
 
+test('M3 API requires Desktop approval before a mobile receives its secure token', async (context) => {
+  const server = createAgentServer({
+    config: testConfig(),
+    pairingEndpoint: {
+      hostCandidates: ['192.168.1.20'],
+      port: 47_832,
+      fingerprint: 'sha256/ABCDEF',
+    },
+    pairingTokenKey: randomBytes(32),
+  });
+  context.after(() => server.close());
+  await listen(server, 0);
+  const address = server.address() as AddressInfo;
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const created = await fetch(`${baseUrl}/api/v1/pairings`, { method: 'POST' });
+  assert.equal(created.status, 201);
+  const challenge = (await created.json()) as {
+    data: { id: string; qrPayload: { nonce: string } };
+  };
+
+  const confirmed = await fetch(`${baseUrl}/api/v1/pairings/${challenge.data.id}/confirm`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      nonce: challenge.data.qrPayload.nonce,
+      displayName: 'Pixel 9 Pro',
+      publicKey: 'ed25519-public-key-material-000000000000000000',
+    }),
+  });
+  assert.equal(confirmed.status, 202);
+  const confirmedBody = (await confirmed.json()) as {
+    data: { confirmationTicket: string; state: { status: string } };
+  };
+  assert.equal(confirmedBody.data.state.status, 'awaiting_approval');
+
+  const beforeApproval = await fetch(`${baseUrl}/api/v1/pairings/${challenge.data.id}/delivery`, {
+    headers: { 'x-devpilot-confirmation': confirmedBody.data.confirmationTicket },
+  });
+  const beforeApprovalBody = (await beforeApproval.json()) as {
+    data: { state: { status: string }; tokens?: unknown };
+  };
+  assert.equal(beforeApproval.status, 200);
+  assert.equal(beforeApprovalBody.data.state.status, 'awaiting_approval');
+  assert.equal(beforeApprovalBody.data.tokens, undefined);
+
+  const approved = await fetch(`${baseUrl}/api/v1/pairings/${challenge.data.id}/approve`, {
+    method: 'POST',
+  });
+  assert.equal(approved.status, 200);
+
+  const delivered = await fetch(`${baseUrl}/api/v1/pairings/${challenge.data.id}/delivery`, {
+    headers: { 'x-devpilot-confirmation': confirmedBody.data.confirmationTicket },
+  });
+  const deliveredBody = (await delivered.json()) as {
+    data: { tokens: { accessToken: string; refreshToken: string } };
+  };
+  assert.equal(delivered.status, 200);
+  assert.ok(deliveredBody.data.tokens.accessToken.startsWith('dpa_'));
+
+  const reconnect = await fetch(`${baseUrl}/api/v1/pairings/me`, {
+    headers: { authorization: `Bearer ${deliveredBody.data.tokens.accessToken}` },
+  });
+  assert.equal(reconnect.status, 200);
+
+  const replay = await fetch(`${baseUrl}/api/v1/pairings/${challenge.data.id}/delivery`, {
+    headers: { 'x-devpilot-confirmation': confirmedBody.data.confirmationTicket },
+  });
+  assert.equal(replay.status, 401);
+});
+
 test('GET /health reports a ready agent', async (context) => {
   const server = createAgentServer();
   context.after(() => server.close());
@@ -206,6 +278,6 @@ test('M2 core can serve the same API and WebSocket upgrade surface over TLS', as
   );
 
   assert.equal(result.status, 200);
-  assert.equal((JSON.parse(result.body) as { data: { version: string } }).data.version, '0.2.0');
+  assert.equal((JSON.parse(result.body) as { data: { version: string } }).data.version, '0.3.0');
   assert.ok(server.listenerCount('upgrade') > 0);
 });

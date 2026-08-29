@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @devpilot/contracts build && pnpm --filter @devpilot/agent build && tauri dev",
+    "dev": "corepack pnpm --filter @devpilot/contracts build && corepack pnpm --filter @devpilot/agent build && tauri dev",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tauri build",
     "build:web": "vite build",
@@ -13,11 +13,13 @@
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
+    "qrcode": "1.5.4",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",
+    "@types/qrcode": "1.5.5",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
     "@vitejs/plugin-react": "6.1.0",

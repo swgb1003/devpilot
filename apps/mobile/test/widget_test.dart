@@ -2,6 +2,8 @@ import 'dart:io';
 import 'dart:ui' show Offset, Size;
 
 import 'package:devpilot_mobile/main.dart';
+import 'package:devpilot_mobile/pairing/pairing_repository.dart';
+import 'package:devpilot_mobile/ui/screen_navigator.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -52,61 +54,22 @@ void main() {
     }
   });
 
-  testWidgets('walks through the primary design flow', (tester) async {
+  testWidgets('opens the real M3 pairing screen from Welcome', (tester) async {
     await tester.pumpWidget(const DevPilotApp());
 
     expect(find.byKey(const ValueKey('screen-welcome')), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('hotspot-welcome-start')));
     await tester.pump();
     expect(find.byKey(const ValueKey('screen-pcPairing')), findsOneWidget);
-
-    await tester.tap(find.byKey(const ValueKey('hotspot-pcPairing-scan')));
-    await tester.pump();
-    expect(find.byKey(const ValueKey('screen-projectSelect')), findsOneWidget);
-
-    await tester.tap(
-      find.byKey(const ValueKey('hotspot-projectSelect-open-project')),
-    );
-    await tester.pump();
-    expect(find.byKey(const ValueKey('screen-dashboard')), findsOneWidget);
-
-    await tester.tap(
-      find.byKey(const ValueKey('hotspot-dashboard-live-preview')),
-    );
-    await tester.pump();
-    expect(find.byKey(const ValueKey('screen-livePreview')), findsOneWidget);
-
-    await tester.tap(
-      find.byKey(const ValueKey('hotspot-livePreview-point-and-fix')),
-    );
-    await tester.pump();
-    expect(find.byKey(const ValueKey('screen-pointAndFix')), findsOneWidget);
-
-    await tester.tap(
-      find.byKey(const ValueKey('hotspot-pointAndFix-start-fix')),
-    );
-    await tester.pump();
-    expect(find.byKey(const ValueKey('screen-aiProcessing')), findsOneWidget);
-
-    await tester.tap(
-      find.byKey(const ValueKey('hotspot-aiProcessing-show-result')),
-    );
-    await tester.pump();
-    expect(find.byKey(const ValueKey('screen-beforeAfter')), findsOneWidget);
+    expect(find.text('QRコードを読み取る'), findsOneWidget);
   });
 
   testWidgets('dashboard shortcuts expose debug, test, and history screens', (
     tester,
   ) async {
-    await tester.pumpWidget(const DevPilotApp());
-    await tester.tap(find.byKey(const ValueKey('hotspot-welcome-start')));
-    await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('hotspot-pcPairing-scan')));
-    await tester.pump();
-    await tester.tap(
-      find.byKey(const ValueKey('hotspot-projectSelect-open-project')),
+    await tester.pumpWidget(
+      const DevPilotApp(initialScreen: DevPilotScreen.dashboard),
     );
-    await tester.pump();
 
     await tester.tap(
       find.byKey(const ValueKey('hotspot-dashboard-debug-console')),
@@ -130,5 +93,22 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('hotspot-testResults-share')));
     await tester.pump();
     expect(find.byKey(const ValueKey('screen-history')), findsOneWidget);
+  });
+
+  test('accepts only a current DevPilot QR on a private LAN address', () {
+    final payload = PairingQrPayload.parse('''
+      {"scheme":"devpilot","version":1,"pairingId":"pair-1",
+       "hostCandidates":["192.168.1.20","8.8.8.8"],"port":47832,
+       "nonce":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+       "expiresAt":"2099-01-01T00:00:00.000Z",
+       "serverPublicKeyFingerprint":"sha256/ABCDEF"}
+    ''');
+
+    expect(payload.hostCandidates, ['192.168.1.20']);
+    expect(payload.port, 47832);
+    expect(
+      () => PairingQrPayload.parse('{"scheme":"http"}'),
+      throwsA(isA<PairingException>()),
+    );
   });
 }

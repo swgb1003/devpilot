@@ -1,11 +1,24 @@
-import { readFileSync } from 'node:fs';
-
 import { ActivityStore } from './activity-store.js';
 import { loadAgentConfig } from './config.js';
+import { loadOrCreatePairingTokenKey } from './credential-store.js';
+import { PairingService } from './pairing-service.js';
+import { PairingStore } from './pairing-store.js';
+import { loadOrCreatePairingTls, privateIpv4Addresses } from './pairing-tls.js';
 import { createAgentServer, listen } from './server.js';
 
 const config = loadAgentConfig();
 const activities = new ActivityStore(config.databasePath);
+const pairingHosts = privateIpv4Addresses();
+const pairingTls = await loadOrCreatePairingTls(config.dataDirectory, pairingHosts);
+const pairings = new PairingService(
+  new PairingStore(config.databasePath, loadOrCreatePairingTokenKey(config.dataDirectory)),
+  activities,
+  {
+    hostCandidates: pairingHosts,
+    port: config.pairingPort,
+    fingerprint: pairingTls.fingerprint,
+  },
+);
 activities.purgeOlderThan(config.activityRetentionDays);
 activities.append({
   kind: 'agent.started',
@@ -13,32 +26,40 @@ activities.append({
   message: 'DevPilot Agent core started.',
   metadata: { schemaVersion: activities.schemaVersion() },
 });
-const tls =
-  config.tlsCertificatePath && config.tlsKeyPath
-    ? {
-        cert: readFileSync(config.tlsCertificatePath),
-        key: readFileSync(config.tlsKeyPath),
-      }
-    : undefined;
-const server = createAgentServer({ config, activityStore: activities, ...(tls ? { tls } : {}) });
+const desktopServer = createAgentServer({
+  config,
+  activityStore: activities,
+  pairingService: pairings,
+});
+const mobileServer = createAgentServer({
+  config: { ...config, host: '0.0.0.0', port: config.pairingPort },
+  activityStore: activities,
+  pairingService: pairings,
+  tls: { cert: pairingTls.cert, key: pairingTls.key },
+});
 
-await listen(server, config.port, config.host);
+await listen(desktopServer, config.port, config.host);
+await listen(mobileServer, config.pairingPort, '0.0.0.0');
 console.log(
-  `DevPilot Agent listening on ${tls ? 'https' : 'http'}://${config.host}:${config.port}`,
+  `DevPilot Desktop API listening on http://${config.host}:${config.port}; ` +
+    `Mobile pairing API listening on https://0.0.0.0:${config.pairingPort}`,
 );
 
 function shutdown(signal: string): void {
   console.log(`DevPilot Agent received ${signal}; shutting down.`);
-  server.close((error) => {
-    activities.append({
-      kind: 'agent.stopped',
-      message: `DevPilot Agent received ${signal}.`,
+  desktopServer.close((desktopError) => {
+    mobileServer.close((mobileError) => {
+      activities.append({
+        kind: 'agent.stopped',
+        message: `DevPilot Agent received ${signal}.`,
+      });
+      pairings.close();
+      activities.close();
+      if (desktopError || mobileError) {
+        console.error(desktopError ?? mobileError);
+        process.exitCode = 1;
+      }
     });
-    activities.close();
-    if (error) {
-      console.error(error);
-      process.exitCode = 1;
-    }
   });
 }
 

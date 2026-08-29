@@ -9,15 +9,15 @@
     "pnpm": "11.19.0"
   },
   "scripts": {
-    "dev:agent": "pnpm --filter @devpilot/agent dev",
-    "dev:desktop": "pnpm --filter @devpilot/desktop dev",
-    "dev:desktop:web": "pnpm --filter @devpilot/desktop dev:web",
-    "build": "pnpm -r --if-present build",
-    "typecheck": "pnpm -r --if-present typecheck",
-    "test": "pnpm -r --if-present test",
+    "dev:agent": "corepack pnpm --filter @devpilot/agent dev",
+    "dev:desktop": "corepack pnpm --filter @devpilot/desktop dev",
+    "dev:desktop:web": "corepack pnpm --filter @devpilot/desktop dev:web",
+    "build": "corepack pnpm -r --if-present build",
+    "typecheck": "corepack pnpm -r --if-present typecheck",
+    "test": "corepack pnpm -r --if-present test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "pnpm format:check && pnpm typecheck && pnpm test && pnpm build",
+    "check": "corepack pnpm format:check && corepack pnpm typecheck && corepack pnpm test && corepack pnpm build",
     "toolchain:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-toolchain.ps1"
   },
   "devDependencies": {

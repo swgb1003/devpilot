@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import type { ActivityRecord, CreateActivityInput } from '@devpilot/contracts';
 
-export const agentSchemaVersion = 1;
+export const agentSchemaVersion = 2;
 
 interface ActivityRow {
   readonly id: string;
@@ -57,11 +57,8 @@ export class ActivityStore {
     const currentVersion = this.#database.prepare('PRAGMA user_version').get() as {
       user_version: number;
     };
-    if (currentVersion.user_version >= agentSchemaVersion) {
-      return;
-    }
-
-    this.#database.exec(`
+    if (currentVersion.user_version < 1) {
+      this.#database.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS pairings (
         id TEXT PRIMARY KEY,
@@ -125,6 +122,32 @@ export class ActivityStore {
       PRAGMA user_version = 1;
       COMMIT;
     `);
+    }
+
+    if (currentVersion.user_version < 2) {
+      this.#database.exec(`
+        BEGIN IMMEDIATE;
+        ALTER TABLE pairings ADD COLUMN nonce_hash TEXT;
+        ALTER TABLE pairings ADD COLUMN confirmation_ticket_hash TEXT;
+        ALTER TABLE pairings ADD COLUMN delivery_ciphertext TEXT;
+        ALTER TABLE pairings ADD COLUMN delivery_consumed_at TEXT;
+        ALTER TABLE pairings ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE pairings ADD COLUMN updated_at TEXT;
+        CREATE TABLE IF NOT EXISTS device_tokens (
+          id TEXT PRIMARY KEY,
+          pairing_id TEXT NOT NULL REFERENCES pairings(id),
+          kind TEXT NOT NULL CHECK(kind IN ('access', 'refresh')),
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at TEXT NOT NULL,
+          revoked_at TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_tokens_pairing
+          ON device_tokens(pairing_id, kind, revoked_at);
+        PRAGMA user_version = 2;
+        COMMIT;
+      `);
+    }
   }
 
   schemaVersion(): number {
