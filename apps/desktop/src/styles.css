@@ -240,6 +240,17 @@ h2 {
   margin: 14px 0 0;
 }
 
+.project-path-input {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 11px 12px;
+  color: #e8efff;
+  background: #0d1524;
+  border: 1px solid #2b4d85;
+  border-radius: 9px;
+}
+
 .pairing-error {
   color: #f7a4af;
 }

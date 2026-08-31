@@ -3,12 +3,16 @@ import { loadAgentConfig } from './config.js';
 import { loadOrCreatePairingTokenKey } from './credential-store.js';
 import { PairingService } from './pairing-service.js';
 import { PairingStore } from './pairing-store.js';
+import { ProjectSessionService } from './project-session-service.js';
 import { loadOrCreatePairingTls, privateIpv4Addresses } from './pairing-tls.js';
 import { createAgentServer, listen } from './server.js';
+import { configureUsbPairingReverse } from './usb-pairing.js';
 
 const config = loadAgentConfig();
 const activities = new ActivityStore(config.databasePath);
-const pairingHosts = privateIpv4Addresses();
+// 127.0.0.1 is reachable only through `adb reverse`. Its certificate pin and
+// pairing nonce make advertising it safe, while LAN candidates remain present.
+const pairingHosts = ['127.0.0.1', ...privateIpv4Addresses()];
 const pairingTls = await loadOrCreatePairingTls(config.dataDirectory, pairingHosts);
 const pairings = new PairingService(
   new PairingStore(config.databasePath, loadOrCreatePairingTokenKey(config.dataDirectory)),
@@ -19,6 +23,7 @@ const pairings = new PairingService(
     fingerprint: pairingTls.fingerprint,
   },
 );
+const projectSessions = new ProjectSessionService(config.databasePath, activities);
 activities.purgeOlderThan(config.activityRetentionDays);
 activities.append({
   kind: 'agent.started',
@@ -30,11 +35,23 @@ const desktopServer = createAgentServer({
   config,
   activityStore: activities,
   pairingService: pairings,
+  projectSessions,
+  preparePairing: async () => {
+    const devices = await configureUsbPairingReverse(config.pairingPort);
+    if (devices.length) {
+      activities.append({
+        kind: 'pairing.created',
+        message: 'USB pairing route was prepared for the connected Android device.',
+        metadata: { transport: 'adb-reverse', deviceIds: devices },
+      });
+    }
+  },
 });
 const mobileServer = createAgentServer({
   config: { ...config, host: '0.0.0.0', port: config.pairingPort },
   activityStore: activities,
   pairingService: pairings,
+  projectSessions,
   tls: { cert: pairingTls.cert, key: pairingTls.key },
 });
 
@@ -54,6 +71,7 @@ function shutdown(signal: string): void {
         message: `DevPilot Agent received ${signal}.`,
       });
       pairings.close();
+      projectSessions.close();
       activities.close();
       if (desktopError || mobileError) {
         console.error(desktopError ?? mobileError);

@@ -82,6 +82,9 @@ export const activityKinds = [
   'project.registered',
   'session.started',
   'session.stopped',
+  'screenshot.captured',
+  'fix_request.created',
+  'fix_request.approved',
   'job.updated',
   'user.note',
 ] as const;
@@ -116,6 +119,9 @@ export const devPilotErrorCodes = [
   'PAIRING_PENDING',
   'PAIRING_DENIED',
   'REQUEST_INVALID',
+  'CAPTURE_FAILED',
+  'ARTIFACT_NOT_FOUND',
+  'FIX_REQUEST_NOT_FOUND',
   'ROUTE_NOT_FOUND',
   'METHOD_NOT_ALLOWED',
   'STORAGE_FAILURE',
@@ -190,6 +196,80 @@ export interface DeviceTokens {
   readonly accessTokenExpiresAt: string;
   readonly refreshToken: string;
   readonly refreshTokenExpiresAt: string;
+}
+
+export type ProjectStatus = 'ready' | 'action_required';
+export interface RegisteredProject {
+  readonly id: string;
+  readonly name: string;
+  readonly rootPath: string;
+  readonly status: ProjectStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+export interface AndroidDevice {
+  readonly id: string;
+  readonly name: string;
+  readonly platform: string;
+  readonly isAuthorized: boolean;
+}
+export interface SessionPreflight {
+  readonly projectId: string;
+  readonly isFlutterProject: boolean;
+  readonly flutterAvailable: boolean;
+  readonly devices: readonly AndroidDevice[];
+  readonly gitState: 'clean' | 'dirty' | 'unavailable';
+  readonly issues: readonly string[];
+}
+export type DevSessionState = 'starting' | 'running' | 'stopped' | 'failed';
+export interface DevSession {
+  readonly id: string;
+  readonly projectId: string;
+  readonly deviceId: string;
+  readonly state: DevSessionState;
+  readonly startedAt: string;
+  readonly endedAt?: string;
+  readonly detail?: string;
+}
+
+export interface ScreenshotArtifact {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly deviceId: string;
+  readonly adapterId: AdapterId;
+  readonly mimeType: 'image/png';
+  readonly bytes: number;
+  readonly width: number;
+  readonly height: number;
+  readonly sha256: string;
+  readonly capturedAt: string;
+  readonly expiresAt: string;
+}
+
+export type FixAnnotation =
+  | { readonly kind: 'point'; readonly x: number; readonly y: number }
+  | {
+      readonly kind: 'rectangle';
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+    };
+
+export type FixRequestState = 'awaiting_approval' | 'approved' | 'cancelled';
+
+export interface FixRequest {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly screenshotId: string;
+  readonly instruction: string;
+  readonly annotation: FixAnnotation;
+  readonly requestedCapabilities: readonly ('edit_existing_dart' | 'hot_reload')[];
+  readonly clientRequestId: string;
+  readonly idempotencyKey: string;
+  readonly state: FixRequestState;
+  readonly createdAt: string;
+  readonly approvedAt?: string;
 }
 
 export interface WsTicket {

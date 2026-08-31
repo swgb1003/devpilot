@@ -22,9 +22,12 @@ import {
 import { ActivityStore } from './activity-store.js';
 import { requireDesktopToken, WsTicketStore } from './auth.js';
 import { loadAgentConfig, type AgentConfig } from './config.js';
+import { DeviceController, ScreenshotArtifactStore } from './device-controller.js';
 import { AgentError, toErrorResponse } from './errors.js';
+import { FixRequestService } from './fix-request-service.js';
 import { PairingService, type PairingEndpoint } from './pairing-service.js';
 import { PairingStore } from './pairing-store.js';
+import { ProjectSessionService } from './project-session-service.js';
 import { createM1ProbeReport } from './probes.js';
 import { AgentEventHub } from './websocket.js';
 
@@ -35,6 +38,11 @@ export interface CreateAgentServerOptions {
   readonly pairingEndpoint?: PairingEndpoint;
   readonly pairingService?: PairingService;
   readonly pairingTokenKey?: Buffer;
+  readonly projectSessions?: ProjectSessionService;
+  readonly screenshotArtifacts?: ScreenshotArtifactStore;
+  readonly deviceController?: DeviceController;
+  readonly fixRequests?: FixRequestService;
+  readonly preparePairing?: () => Promise<void>;
 }
 
 function jsonHeaders(request: IncomingMessage, config: AgentConfig): Record<string, string> {
@@ -57,6 +65,22 @@ function sendJson(
 ): void {
   response.writeHead(status, jsonHeaders(request, config));
   response.end(JSON.stringify(body));
+}
+
+function sendPng(
+  request: IncomingMessage,
+  response: ServerResponse,
+  config: AgentConfig,
+  bytes: Buffer,
+): void {
+  const headers = jsonHeaders(request, config);
+  response.writeHead(200, {
+    ...headers,
+    'content-type': 'image/png',
+    'content-length': String(bytes.length),
+    'x-content-type-options': 'nosniff',
+  });
+  response.end(bytes);
 }
 
 async function readJson(request: IncomingMessage, maxBytes = 65_536): Promise<unknown> {
@@ -197,6 +221,17 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
       },
     );
   const tickets = new WsTicketStore();
+  const ownsProjectSessions = options.projectSessions === undefined;
+  const projectSessions = options.projectSessions ?? new ProjectSessionService(config.databasePath, activities);
+  const ownsScreenshotArtifacts = options.screenshotArtifacts === undefined;
+  const screenshotArtifacts = options.screenshotArtifacts ?? new ScreenshotArtifactStore();
+  const deviceController =
+    options.deviceController ??
+    new DeviceController(projectSessions, screenshotArtifacts, activities);
+  const ownsFixRequests = options.fixRequests === undefined;
+  const fixRequests =
+    options.fixRequests ??
+    new FixRequestService(config.databasePath, activities, screenshotArtifacts, projectSessions);
   const eventHub = new AgentEventHub();
   const unsubscribe = activities.subscribe((activity) => eventHub.publishActivity(activity));
 
@@ -231,6 +266,12 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
         const pairingDeliveryMatch = /^\/api\/v1\/pairings\/([^/]+)\/delivery$/.exec(url.pathname);
         const pairingStatusMatch = /^\/api\/v1\/pairings\/([^/]+)$/.exec(url.pathname);
         const pairingApproveMatch = /^\/api\/v1\/pairings\/([^/]+)\/approve$/.exec(url.pathname);
+        const projectPreflightMatch = /^\/api\/v1\/projects\/([^/]+)\/preflight$/.exec(url.pathname);
+        const sessionStopMatch = /^\/api\/v1\/sessions\/([^/]+)\/stop$/.exec(url.pathname);
+        const mobileArtifactMatch = /^\/api\/v1\/mobile\/artifacts\/([^/]+)$/.exec(url.pathname);
+        const mobileSessionScreenshotMatch = /^\/api\/v1\/mobile\/sessions\/([^/]+)\/screenshots$/.exec(url.pathname);
+        const mobileFixRequestApproveMatch = /^\/api\/v1\/mobile\/fix-requests\/([^/]+)\/approve$/.exec(url.pathname);
+        const desktopArtifactMatch = /^\/api\/v1\/artifacts\/([^/]+)$/.exec(url.pathname);
 
         if (request.method === 'POST' && pairingConfirmMatch) {
           const result = pairingService.confirm(
@@ -285,18 +326,75 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
           return;
         }
 
+        const mobileProjects = request.method === 'GET' && url.pathname === '/api/v1/mobile/projects';
+        const mobileDevices = request.method === 'GET' && url.pathname === '/api/v1/mobile/devices';
+        const mobileSession = request.method === 'GET' && url.pathname === '/api/v1/mobile/session';
+        const mobileStart = request.method === 'POST' && url.pathname === '/api/v1/mobile/sessions';
+        const mobileStop = request.method === 'POST' && url.pathname === '/api/v1/mobile/session/stop';
+        const mobileCapture = request.method === 'POST' && url.pathname === '/api/v1/mobile/previews';
+        const mobileArtifact = request.method === 'GET' && mobileArtifactMatch !== null;
+        const mobileSessionScreenshot = request.method === 'POST' && mobileSessionScreenshotMatch !== null;
+        const mobileFixRequest = request.method === 'POST' && url.pathname === '/api/v1/mobile/fix-requests';
+        const mobileFixRequestApprove = request.method === 'POST' && mobileFixRequestApproveMatch !== null;
+        if (mobileProjects || mobileDevices || mobileSession || mobileStart || mobileStop || mobileCapture || mobileArtifact || mobileSessionScreenshot || mobileFixRequest || mobileFixRequestApprove) {
+          pairingService.authenticate(requireBearerToken(request.headers.authorization));
+          if (mobileProjects) { sendJson(request, response, config, 200, { data: projectSessions.listProjects() }); return; }
+          if (mobileDevices) { sendJson(request, response, config, 200, { data: await projectSessions.devices() }); return; }
+          if (mobileSession) { sendJson(request, response, config, 200, { data: projectSessions.getSession() ?? null }); return; }
+          if (mobileStop) { const current = projectSessions.getSession(); if (!current) throw new AgentError({ code: 'REQUEST_INVALID', message: '終了する開発セッションがありません。', status: 400, action: 'CHECK_REQUEST' }); sendJson(request,response,config,200,{data:await projectSessions.stop(current.id)}); return; }
+          if (mobileCapture) { sendJson(request, response, config, 201, { data: await deviceController.capturePreview() }); return; }
+          if (mobileSessionScreenshot) { sendJson(request, response, config, 201, { data: await deviceController.capturePreview(mobileSessionScreenshotMatch![1]!) }); return; }
+          if (mobileFixRequest) {
+            const input = await readJson(request) as {
+              sessionId?: unknown; screenshotId?: unknown; instruction?: unknown; annotation?: unknown;
+              clientRequestId?: unknown; idempotencyKey?: unknown;
+            };
+            if (
+              typeof input.sessionId !== 'string' || typeof input.screenshotId !== 'string' ||
+              typeof input.instruction !== 'string' || typeof input.clientRequestId !== 'string' ||
+              typeof input.idempotencyKey !== 'string' ||
+              typeof input.annotation !== 'object' || input.annotation === null || Array.isArray(input.annotation)
+            ) throw new AgentError({ code: 'REQUEST_INVALID', message: 'FixRequestの必須項目が不足しています。', status: 400, action: 'CHECK_REQUEST' });
+            sendJson(request, response, config, 201, { data: fixRequests.create({
+              sessionId: input.sessionId, screenshotId: input.screenshotId, instruction: input.instruction,
+              annotation: input.annotation as never, clientRequestId: input.clientRequestId, idempotencyKey: input.idempotencyKey,
+            }) });
+            return;
+          }
+          if (mobileFixRequestApprove) { sendJson(request, response, config, 200, { data: fixRequests.approve(mobileFixRequestApproveMatch![1]!) }); return; }
+          if (mobileArtifact) {
+            const artifact = screenshotArtifacts.read(mobileArtifactMatch![1]!);
+            if (!artifact) throw new AgentError({ code: 'ARTIFACT_NOT_FOUND', message: 'プレビュー画像の有効期限が切れました。もう一度更新してください。', status: 404, action: 'RETRY', retryable: true });
+            sendPng(request, response, config, artifact.bytes);
+            return;
+          }
+          const input = await readJson(request) as { projectId?: unknown; deviceId?: unknown };
+          if (typeof input.projectId !== 'string' || typeof input.deviceId !== 'string') throw new AgentError({ code: 'REQUEST_INVALID', message: 'projectId と deviceId が必要です。', status: 400, action: 'CHECK_REQUEST' });
+          sendJson(request,response,config,201,{data:await projectSessions.start(input.projectId,input.deviceId)}); return;
+        }
+
         const desktopPairingControl =
           (request.method === 'POST' && url.pathname === '/api/v1/pairings') ||
           (request.method === 'GET' && pairingStatusMatch !== null) ||
           (request.method === 'POST' && pairingApproveMatch !== null);
+        const desktopProjectControl =
+          url.pathname === '/api/v1/projects' ||
+          projectPreflightMatch !== null ||
+          url.pathname === '/api/v1/devices' ||
+          url.pathname === '/api/v1/sessions' ||
+          sessionStopMatch !== null ||
+          url.pathname === '/api/v1/session' ||
+          url.pathname === '/api/v1/previews/capture' ||
+          desktopArtifactMatch !== null;
         if (
           url.pathname.startsWith('/api/v1/') &&
-          !(desktopPairingControl && isLoopbackRequest(request))
+          !((desktopPairingControl || desktopProjectControl) && isLoopbackRequest(request))
         ) {
           requireDesktopToken(request.headers.authorization, config.desktopToken);
         }
 
         if (request.method === 'POST' && url.pathname === '/api/v1/pairings') {
+          await options.preparePairing?.();
           sendJson(request, response, config, 201, { data: pairingService.createChallenge() });
           return;
         }
@@ -312,6 +410,24 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
           sendJson(request, response, config, 200, {
             data: pairingService.approve(pairingApproveMatch[1]!),
           });
+          return;
+        }
+
+        if (desktopProjectControl && !isLoopbackRequest(request)) {
+          requireDesktopToken(request.headers.authorization, config.desktopToken);
+        }
+        if (request.method === 'GET' && url.pathname === '/api/v1/projects') { sendJson(request,response,config,200,{data:projectSessions.listProjects()}); return; }
+        if (request.method === 'POST' && url.pathname === '/api/v1/projects') { const input = await readJson(request) as { rootPath?: unknown }; if (typeof input.rootPath !== 'string') throw new AgentError({ code: 'REQUEST_INVALID', message: 'rootPath が必要です。', status: 400, action: 'CHECK_REQUEST' }); sendJson(request,response,config,201,{data:projectSessions.register(input.rootPath)}); return; }
+        if (request.method === 'POST' && projectPreflightMatch) { sendJson(request,response,config,200,{data:await projectSessions.preflight(projectPreflightMatch[1]!)}); return; }
+        if (request.method === 'GET' && url.pathname === '/api/v1/devices') { sendJson(request,response,config,200,{data:await projectSessions.devices()}); return; }
+        if (request.method === 'GET' && url.pathname === '/api/v1/session') { sendJson(request,response,config,200,{data:projectSessions.getSession() ?? null}); return; }
+        if (request.method === 'POST' && url.pathname === '/api/v1/sessions') { const input = await readJson(request) as { projectId?: unknown; deviceId?: unknown }; if (typeof input.projectId !== 'string' || typeof input.deviceId !== 'string') throw new AgentError({ code: 'REQUEST_INVALID', message: 'projectId と deviceId が必要です。', status: 400, action: 'CHECK_REQUEST' }); sendJson(request,response,config,201,{data:await projectSessions.start(input.projectId,input.deviceId)}); return; }
+        if (request.method === 'POST' && sessionStopMatch) { sendJson(request,response,config,200,{data:await projectSessions.stop(sessionStopMatch[1]!)}); return; }
+        if (request.method === 'POST' && url.pathname === '/api/v1/previews/capture') { sendJson(request,response,config,201,{data:await deviceController.capturePreview()}); return; }
+        if (request.method === 'GET' && desktopArtifactMatch) {
+          const artifact = screenshotArtifacts.read(desktopArtifactMatch[1]!);
+          if (!artifact) throw new AgentError({ code: 'ARTIFACT_NOT_FOUND', message: 'プレビュー画像の有効期限が切れました。もう一度更新してください。', status: 404, action: 'RETRY', retryable: true });
+          sendPng(request, response, config, artifact.bytes);
           return;
         }
 
@@ -371,6 +487,15 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
     }
     if (ownsPairingService) {
       pairingService.close();
+    }
+    if (ownsProjectSessions) {
+      projectSessions.close();
+    }
+    if (ownsScreenshotArtifacts) {
+      screenshotArtifacts.clear();
+    }
+    if (ownsFixRequests) {
+      fixRequests.close();
     }
   });
   return server;

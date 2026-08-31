@@ -86,14 +86,16 @@ export async function runCommand(
               '/d',
               '/s',
               '/c',
-              [quoteForWindowsCommand(executable), ...arguments_.map(quoteForWindowsCommand)].join(
-                ' ',
-              ),
+              `"${[
+                quoteForWindowsCommand(executable),
+                ...arguments_.map(quoteForWindowsCommand),
+              ].join(' ')}"`,
             ],
             {
               ...(options.environment ? { env: options.environment } : {}),
               shell: false,
               stdio: ['ignore', 'pipe', 'pipe'],
+              windowsVerbatimArguments: true,
               windowsHide: true,
             },
           )
@@ -185,14 +187,16 @@ export async function runBinaryCommand(
               '/d',
               '/s',
               '/c',
-              [quoteForWindowsCommand(executable), ...arguments_.map(quoteForWindowsCommand)].join(
-                ' ',
-              ),
+              `"${[
+                quoteForWindowsCommand(executable),
+                ...arguments_.map(quoteForWindowsCommand),
+              ].join(' ')}"`,
             ],
             {
               ...(options.environment ? { env: options.environment } : {}),
               shell: false,
               stdio: ['ignore', 'pipe', 'pipe'],
+              windowsVerbatimArguments: true,
               windowsHide: true,
             },
           )

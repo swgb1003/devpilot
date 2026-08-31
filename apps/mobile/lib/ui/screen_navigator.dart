@@ -1,6 +1,8 @@
 import 'dart:ui' show ImageFilter;
 
 import 'package:devpilot_mobile/pairing/pairing_screen.dart';
+import 'package:devpilot_mobile/pairing/project_select_screen.dart';
+import 'package:devpilot_mobile/preview/live_preview_screen.dart';
 import 'package:flutter/material.dart';
 
 const _designWidth = 941.0;
@@ -545,6 +547,17 @@ class _DevPilotScreenNavigatorState extends State<DevPilotScreenNavigator> {
             _current = DevPilotScreen.projectSelect;
           });
         },
+      );
+    }
+    if (_current == DevPilotScreen.projectSelect) {
+      return ProjectSelectScreen(
+        onOpen: () => setState(() => _current = DevPilotScreen.dashboard),
+      );
+    }
+    if (_current == DevPilotScreen.livePreview) {
+      return LivePreviewScreen(
+        onBack: _goBack,
+        onPointAndFix: () => _open(DevPilotScreen.pointAndFix),
       );
     }
     final spec = _screenSpecs[_current]!;

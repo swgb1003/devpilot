@@ -57,6 +57,9 @@ interface PairingState {
   readonly expiresAt: string;
   readonly device?: { readonly displayName: string; readonly publicKey: string };
 }
+interface RegisteredProject { readonly id: string; readonly name: string; readonly rootPath: string; readonly status: string }
+interface AndroidDevice { readonly id: string; readonly name: string; readonly isAuthorized: boolean }
+interface DevSession { readonly id: string; readonly projectId: string; readonly deviceId: string; readonly state: string; readonly detail?: string }
 
 const agentEndpoint = 'http://127.0.0.1:47831';
 
@@ -83,6 +86,84 @@ export function App() {
   const [qrImage, setQrImage] = useState<string | undefined>();
   const [pairingError, setPairingError] = useState<string | undefined>();
   const [isPairingLoading, setIsPairingLoading] = useState(false);
+  const [projects, setProjects] = useState<readonly RegisteredProject[]>([]);
+  const [devices, setDevices] = useState<readonly AndroidDevice[]>([]);
+  const [session, setSession] = useState<DevSession | undefined>();
+  const [projectPath, setProjectPath] = useState('');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [m4Error, setM4Error] = useState<string | undefined>();
+
+  const refreshM4 = useCallback(async () => {
+    try {
+      const [projectsResponse, devicesResponse, sessionResponse] = await Promise.all([
+        fetch(`${agentEndpoint}/api/v1/projects`), fetch(`${agentEndpoint}/api/v1/devices`), fetch(`${agentEndpoint}/api/v1/session`),
+      ]);
+      if (!projectsResponse.ok || !devicesResponse.ok || !sessionResponse.ok) throw new Error('AgentのM4 APIへ接続できません。');
+      const projectData = (await projectsResponse.json()) as { data: RegisteredProject[] };
+      const deviceData = (await devicesResponse.json()) as { data: AndroidDevice[] };
+      const sessionData = (await sessionResponse.json()) as { data: DevSession | null };
+      setProjects(projectData.data); setDevices(deviceData.data); setSession(sessionData.data ?? undefined);
+      setSelectedProjectId((current) => current || projectData.data[0]?.id || '');
+    } catch (caught) { setM4Error(caught instanceof Error ? caught.message : 'M4の状態を取得できません。'); }
+  }, []);
+
+  useEffect(() => { void refreshM4(); }, [refreshM4]);
+  const refreshSession = useCallback(async () => {
+    try {
+      const response = await fetch(`${agentEndpoint}/api/v1/session`);
+      if (!response.ok) throw new Error('Agentのセッション状態を取得できません。');
+      const body = (await response.json()) as { data: DevSession | null };
+      setSession(body.data ?? undefined);
+    } catch (caught) {
+      setM4Error(caught instanceof Error ? caught.message : 'セッション状態を取得できません。');
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => { void refreshSession(); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [refreshSession]);
+
+  const refreshDevices = useCallback(async () => {
+    try {
+      const response = await fetch(`${agentEndpoint}/api/v1/devices`);
+      if (!response.ok) throw new Error('Android端末の状態を取得できません。');
+      const body = (await response.json()) as { data: AndroidDevice[] };
+      setDevices(body.data);
+      if (body.data.some((device) => device.isAuthorized)) setM4Error(undefined);
+    } catch (caught) {
+      setM4Error(caught instanceof Error ? caught.message : 'Android端末の状態を取得できません。');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (devices.some((device) => device.isAuthorized)) return undefined;
+    void refreshDevices();
+    const timer = window.setInterval(() => { void refreshDevices(); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [devices, refreshDevices]);
+
+  const registerProject = useCallback(async () => {
+    setM4Error(undefined);
+    try { const response = await fetch(`${agentEndpoint}/api/v1/projects`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rootPath: projectPath }) }); if (!response.ok) throw new Error(((await response.json()) as { error?: { message?: string } }).error?.message ?? 'プロジェクトを登録できません。'); setProjectPath(''); await refreshM4(); } catch (caught) { setM4Error(caught instanceof Error ? caught.message : 'プロジェクトを登録できません。'); }
+  }, [projectPath, refreshM4]);
+  const startSession = useCallback(async () => {
+    const device = devices.find((item) => item.isAuthorized); if (!selectedProjectId || !device) { setM4Error('Flutterプロジェクトとauthorized Android端末を選択してください。'); return; }
+    setM4Error(undefined); try { const response = await fetch(`${agentEndpoint}/api/v1/sessions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectId: selectedProjectId, deviceId: device.id }) }); if (!response.ok) throw new Error(((await response.json()) as { error?: { message?: string } }).error?.message ?? 'セッションを開始できません。'); await refreshM4(); } catch (caught) { setM4Error(caught instanceof Error ? caught.message : 'セッションを開始できません。'); }
+  }, [devices, selectedProjectId, refreshM4]);
+  const stopSession = useCallback(async () => { if (!session) return; await fetch(`${agentEndpoint}/api/v1/sessions/${session.id}/stop`, { method: 'POST' }); await refreshM4(); }, [session, refreshM4]);
+  const chooseProjectFolder = useCallback(async () => {
+    if (!isTauriRuntime()) {
+      setM4Error('フォルダ選択はDevPilot Desktopアプリで利用できます。ブラウザ表示ではパスを貼り付けてください。');
+      return;
+    }
+    try {
+      const selected = await invoke<string | null>('select_flutter_project_folder');
+      if (selected) setProjectPath(selected);
+    } catch (caught) {
+      setM4Error(caught instanceof Error ? caught.message : 'フォルダを選択できませんでした。');
+    }
+  }, []);
 
   const refreshReport = useCallback(async () => {
     setIsLoading(true);
@@ -248,6 +329,21 @@ export function App() {
           <h1 id="page-title">DevPilot Desktop</h1>
           <p className="tagline">Local state, authenticated APIs, Activity, and events.</p>
         </div>
+      </section>
+
+      <section className="status-card pairing-card" aria-labelledby="m4-title">
+        <div className="status-heading"><div><p className="eyebrow">M4 Project / Session</p><h2 id="m4-title">Flutter開発セッション</h2></div><span className={`status-pill ${session?.state === 'running' ? 'is-ready' : ''}`}>{session?.state ?? 'Ready to set up'}</span></div>
+        <div className="pairing-content"><div className="pairing-copy">
+          <p>Flutterアプリフォルダ（中に <code>pubspec.yaml</code> があるフォルダ）を登録し、検出済みのAndroid実機でAgent管理の <code>flutter run</code> を開始します。</p>
+          <input className="project-path-input" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="Flutterアプリフォルダのパスを貼り付け 例: C:\\work\\my_flutter_app" />
+          <button className="quiet-button" type="button" onClick={() => void chooseProjectFolder()}>アプリフォルダを選択</button>
+          <button className="quiet-button" type="button" onClick={() => void navigator.clipboard.readText().then(setProjectPath).catch(() => setM4Error('クリップボードを読み取れませんでした。パスを入力欄へ貼り付けてください。'))}>クリップボードから貼り付け</button>
+          <button className="quiet-button" type="button" disabled={!projectPath} onClick={() => void registerProject()}>プロジェクトを登録</button>
+          <select className="project-path-input" value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}><option value="">プロジェクトを選択</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name} — {project.rootPath}</option>)}</select>
+          <p className="muted">Android: {devices.filter((device) => device.isAuthorized).map((device) => device.name).join(', ') || '検出されていません'}</p>
+          {session?.state === 'starting' || session?.state === 'running' ? <button className="primary-button" type="button" onClick={() => void stopSession()}>開発セッションを終了</button> : <button className="primary-button" type="button" onClick={() => void startSession()}>Open Dev Session</button>}
+          {session?.detail ? <p className="muted">{session.detail}</p> : null}{m4Error ? <p className="pairing-error">{m4Error}</p> : null}
+        </div><div className="pairing-qr-placeholder" aria-hidden="true">M4</div></div>
       </section>
 
       <section className="status-card" aria-labelledby="agent-title">

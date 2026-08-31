@@ -87,6 +87,7 @@ export function loadAgentConfig(
     allowedOrigins: [
       `http://127.0.0.1:${port}`,
       'http://127.0.0.1:5173',
+      'http://tauri.localhost',
       'tauri://localhost',
       'https://tauri.localhost',
     ],

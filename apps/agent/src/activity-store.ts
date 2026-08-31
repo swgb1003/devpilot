@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import type { ActivityRecord, CreateActivityInput } from '@devpilot/contracts';
 
-export const agentSchemaVersion = 2;
+export const agentSchemaVersion = 3;
 
 interface ActivityRow {
   readonly id: string;
@@ -145,6 +145,14 @@ export class ActivityStore {
         CREATE INDEX IF NOT EXISTS idx_device_tokens_pairing
           ON device_tokens(pairing_id, kind, revoked_at);
         PRAGMA user_version = 2;
+        COMMIT;
+      `);
+    }
+    if (currentVersion.user_version < 3) {
+      this.#database.exec(`
+        BEGIN IMMEDIATE;
+        ALTER TABLE sessions ADD COLUMN detail TEXT;
+        PRAGMA user_version = 3;
         COMMIT;
       `);
     }
