@@ -132,6 +132,10 @@ export class FixRequestService {
     return toFixRequest(approved);
   }
 
+  get(id: string): FixRequest {
+    return toFixRequest(this.#row(id));
+  }
+
   close(): void {
     this.#database.close();
   }

@@ -21,6 +21,7 @@ import {
 
 import { ActivityStore } from './activity-store.js';
 import { requireDesktopToken, WsTicketStore } from './auth.js';
+import { ChangeService } from './change-service.js';
 import { loadAgentConfig, type AgentConfig } from './config.js';
 import { DeviceController, ScreenshotArtifactStore } from './device-controller.js';
 import { AgentError, toErrorResponse } from './errors.js';
@@ -42,6 +43,7 @@ export interface CreateAgentServerOptions {
   readonly screenshotArtifacts?: ScreenshotArtifactStore;
   readonly deviceController?: DeviceController;
   readonly fixRequests?: FixRequestService;
+  readonly changes?: ChangeService;
   readonly preparePairing?: () => Promise<void>;
 }
 
@@ -232,6 +234,8 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
   const fixRequests =
     options.fixRequests ??
     new FixRequestService(config.databasePath, activities, screenshotArtifacts, projectSessions);
+  const ownsChanges = options.changes === undefined;
+  const changes = options.changes ?? new ChangeService(config.databasePath, activities, fixRequests, projectSessions);
   const eventHub = new AgentEventHub();
   const unsubscribe = activities.subscribe((activity) => eventHub.publishActivity(activity));
 
@@ -271,6 +275,9 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
         const mobileArtifactMatch = /^\/api\/v1\/mobile\/artifacts\/([^/]+)$/.exec(url.pathname);
         const mobileSessionScreenshotMatch = /^\/api\/v1\/mobile\/sessions\/([^/]+)\/screenshots$/.exec(url.pathname);
         const mobileFixRequestApproveMatch = /^\/api\/v1\/mobile\/fix-requests\/([^/]+)\/approve$/.exec(url.pathname);
+        const mobileFixRequestProposalMatch = /^\/api\/v1\/mobile\/fix-requests\/([^/]+)\/proposals$/.exec(url.pathname);
+        const mobileChangeSetMatch = /^\/api\/v1\/mobile\/change-sets\/([^/]+)$/.exec(url.pathname);
+        const mobileChangeSetApplyMatch = /^\/api\/v1\/mobile\/change-sets\/([^/]+)\/apply$/.exec(url.pathname);
         const desktopArtifactMatch = /^\/api\/v1\/artifacts\/([^/]+)$/.exec(url.pathname);
 
         if (request.method === 'POST' && pairingConfirmMatch) {
@@ -336,7 +343,10 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
         const mobileSessionScreenshot = request.method === 'POST' && mobileSessionScreenshotMatch !== null;
         const mobileFixRequest = request.method === 'POST' && url.pathname === '/api/v1/mobile/fix-requests';
         const mobileFixRequestApprove = request.method === 'POST' && mobileFixRequestApproveMatch !== null;
-        if (mobileProjects || mobileDevices || mobileSession || mobileStart || mobileStop || mobileCapture || mobileArtifact || mobileSessionScreenshot || mobileFixRequest || mobileFixRequestApprove) {
+        const mobileFixRequestProposal = request.method === 'POST' && mobileFixRequestProposalMatch !== null;
+        const mobileChangeSet = request.method === 'GET' && mobileChangeSetMatch !== null;
+        const mobileChangeSetApply = request.method === 'POST' && mobileChangeSetApplyMatch !== null;
+        if (mobileProjects || mobileDevices || mobileSession || mobileStart || mobileStop || mobileCapture || mobileArtifact || mobileSessionScreenshot || mobileFixRequest || mobileFixRequestApprove || mobileFixRequestProposal || mobileChangeSet || mobileChangeSetApply) {
           pairingService.authenticate(requireBearerToken(request.headers.authorization));
           if (mobileProjects) { sendJson(request, response, config, 200, { data: projectSessions.listProjects() }); return; }
           if (mobileDevices) { sendJson(request, response, config, 200, { data: await projectSessions.devices() }); return; }
@@ -362,6 +372,9 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
             return;
           }
           if (mobileFixRequestApprove) { sendJson(request, response, config, 200, { data: fixRequests.approve(mobileFixRequestApproveMatch![1]!) }); return; }
+          if (mobileFixRequestProposal) { sendJson(request, response, config, 201, { data: await changes.generate(mobileFixRequestProposalMatch![1]!) }); return; }
+          if (mobileChangeSet) { sendJson(request, response, config, 200, { data: changes.get(mobileChangeSetMatch![1]!) }); return; }
+          if (mobileChangeSetApply) { sendJson(request, response, config, 200, { data: changes.apply(mobileChangeSetApplyMatch![1]!) }); return; }
           if (mobileArtifact) {
             const artifact = screenshotArtifacts.read(mobileArtifactMatch![1]!);
             if (!artifact) throw new AgentError({ code: 'ARTIFACT_NOT_FOUND', message: 'プレビュー画像の有効期限が切れました。もう一度更新してください。', status: 404, action: 'RETRY', retryable: true });
@@ -496,6 +509,9 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
     }
     if (ownsFixRequests) {
       fixRequests.close();
+    }
+    if (ownsChanges) {
+      changes.close();
     }
   });
   return server;

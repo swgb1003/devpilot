@@ -179,6 +179,10 @@ export class ProjectSessionService {
     return row ? toSession(row) : undefined;
   }
 
+  projectForSession(sessionId: string): RegisteredProject {
+    return toProject(this.#project(this.#session(sessionId).project_id));
+  }
+
   async stop(sessionId: string): Promise<DevSession> {
     const current = this.#session(sessionId);
     this.#processes.get(sessionId)?.kill();

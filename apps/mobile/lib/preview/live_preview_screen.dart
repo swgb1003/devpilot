@@ -9,11 +9,9 @@ class LivePreviewScreen extends StatefulWidget {
   const LivePreviewScreen({
     super.key,
     required this.onBack,
-    required this.onPointAndFix,
   });
 
   final VoidCallback onBack;
-  final VoidCallback onPointAndFix;
 
   @override
   State<LivePreviewScreen> createState() => _LivePreviewScreenState();
@@ -29,6 +27,7 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
   bool _overlayVisible = false;
   OverlaySelection? _pendingSelection;
   FixRequest? _fixRequest;
+  ChangeSet? _changeSet;
   bool _submittingFix = false;
   String? _fixError;
 
@@ -101,6 +100,24 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
     }
   }
 
+  Future<void> _startPointAndFix() async {
+    try {
+      if ((await FloatingControl.status()).visible) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('hamolo を開き、画面上の DP ボタンから修正箇所を選択してください。')),
+        );
+        return;
+      }
+      await _toggleFloatingControl();
+    } on PlatformException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Point & Fix を開始できませんでした。')),
+      );
+    }
+  }
+
   Future<void> _createFixFromOverlay(OverlaySelection selection) async {
     if (_submittingFix) return;
     if (mounted) {
@@ -153,6 +170,52 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
     try {
       final approved = await _repository.approveFixRequest(request.id);
       if (mounted) setState(() => _fixRequest = approved);
+    } on PairingException catch (error) {
+      if (mounted) setState(() => _fixError = error.message);
+    } finally {
+      if (mounted) setState(() => _submittingFix = false);
+    }
+  }
+
+  Future<void> _generateProposal() async {
+    final request = _fixRequest;
+    if (request == null || request.state != 'approved' || _submittingFix) return;
+    setState(() {
+      _submittingFix = true;
+      _fixError = null;
+    });
+    try {
+      final proposal = await _repository.generateChangeProposal(request.id);
+      if (mounted) setState(() => _changeSet = proposal);
+    } on PairingException catch (error) {
+      if (mounted) setState(() => _fixError = error.message);
+    } finally {
+      if (mounted) setState(() => _submittingFix = false);
+    }
+  }
+
+  Future<void> _applyProposal() async {
+    final proposal = _changeSet;
+    if (proposal == null || proposal.state != 'proposed' || _submittingFix) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('修正案を適用しますか？'),
+        content: Text('${proposal.files.length} 個の既存 Dart ファイルだけを更新します。M8 で解析とホットリロードを行います。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('キャンセル')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('適用する')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() {
+      _submittingFix = true;
+      _fixError = null;
+    });
+    try {
+      final applied = await _repository.applyChangeSet(proposal.id);
+      if (mounted) setState(() => _changeSet = applied);
     } on PairingException catch (error) {
       if (mounted) setState(() => _fixError = error.message);
     } finally {
@@ -320,6 +383,54 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
                             ),
                           ),
                         ],
+                        if (request.state == 'approved' && _changeSet == null) ...[
+                          const SizedBox(height: 8),
+                          FilledButton.icon(
+                            key: const ValueKey('fix-request-generate-proposal'),
+                            onPressed: _submittingFix ? null : _generateProposal,
+                            icon: const Icon(Icons.auto_fix_high_rounded),
+                            label: Text(_submittingFix ? '修正案を生成中…' : '修正案を生成'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF3183FF),
+                              minimumSize: const Size.fromHeight(42),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                if (_changeSet case final changeSet?)
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(11),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF101722),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: changeSet.state == 'applied' ? const Color(0xFF54E5A0) : const Color(0xFF8CB6FF)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(changeSet.state == 'applied' ? '修正案を適用しました' : 'Codex の修正案', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 4),
+                        Text(changeSet.summary, style: const TextStyle(color: Color(0xFFB9C7E1), fontSize: 12)),
+                        const SizedBox(height: 5),
+                        Text(changeSet.files.map((file) => '${file.path}  +${file.additions} −${file.deletions}').join('\n'), style: const TextStyle(color: Color(0xFFAAC5FF), fontSize: 11)),
+                        if (changeSet.risks.isNotEmpty) ...[
+                          const SizedBox(height: 5),
+                          Text('注意: ${changeSet.risks.join(' / ')}', style: const TextStyle(color: Color(0xFFFFD08A), fontSize: 11)),
+                        ],
+                        if (changeSet.state == 'proposed') ...[
+                          const SizedBox(height: 8),
+                          FilledButton.icon(
+                            key: const ValueKey('change-set-apply'),
+                            onPressed: _submittingFix ? null : _applyProposal,
+                            icon: const Icon(Icons.check_circle_outline_rounded),
+                            label: const Text('この修正案を適用'),
+                            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2D9B6F), minimumSize: const Size.fromHeight(42)),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -435,11 +546,9 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
                     Expanded(
                       child: FilledButton.icon(
                         key: const ValueKey('live-preview-point-and-fix'),
-                        onPressed: _image == null && _pendingSelection == null
-                            ? null
-                            : widget.onPointAndFix,
+                        onPressed: _submittingFix ? null : _startPointAndFix,
                         icon: const Icon(Icons.ads_click_rounded),
-                        label: const Text('Point & Fix'),
+                        label: const Text('Point & Fix を開始'),
                         style: FilledButton.styleFrom(
                           backgroundColor: accent,
                           minimumSize: const Size.fromHeight(50),

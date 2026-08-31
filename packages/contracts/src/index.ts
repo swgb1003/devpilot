@@ -85,6 +85,8 @@ export const activityKinds = [
   'screenshot.captured',
   'fix_request.created',
   'fix_request.approved',
+  'change.proposed',
+  'change.applied',
   'job.updated',
   'user.note',
 ] as const;
@@ -122,6 +124,9 @@ export const devPilotErrorCodes = [
   'CAPTURE_FAILED',
   'ARTIFACT_NOT_FOUND',
   'FIX_REQUEST_NOT_FOUND',
+  'AI_PROVIDER_UNAVAILABLE',
+  'CHANGE_SCOPE_REJECTED',
+  'CHANGE_CONFLICT',
   'ROUTE_NOT_FOUND',
   'METHOD_NOT_ALLOWED',
   'STORAGE_FAILURE',
@@ -270,6 +275,27 @@ export interface FixRequest {
   readonly state: FixRequestState;
   readonly createdAt: string;
   readonly approvedAt?: string;
+}
+
+export interface ProposedFileChange {
+  readonly path: string;
+  readonly beforeSha256: string;
+  readonly afterSha256: string;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
+export type ChangeSetState = 'proposed' | 'applied' | 'conflicted';
+
+export interface ChangeSet {
+  readonly id: string;
+  readonly fixRequestId: string;
+  readonly state: ChangeSetState;
+  readonly summary: string;
+  readonly risks: readonly string[];
+  readonly files: readonly ProposedFileChange[];
+  readonly createdAt: string;
+  readonly appliedAt?: string;
 }
 
 export interface WsTicket {

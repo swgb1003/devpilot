@@ -9,11 +9,13 @@ class PairingScreen extends StatefulWidget {
     super.key,
     required this.onBack,
     required this.onPaired,
+    this.skipReconnect = false,
     this.repository,
   });
 
   final VoidCallback onBack;
   final VoidCallback onPaired;
+  final bool skipReconnect;
   final PairingRepository? repository;
 
   @override
@@ -38,7 +40,7 @@ class _PairingScreenState extends State<PairingScreen>
     WidgetsBinding.instance.addObserver(this);
     _repository = widget.repository ?? PairingRepository();
     _scannerController = MobileScannerController(autoStart: false);
-    unawaited(_restoreConnection());
+    if (!widget.skipReconnect) unawaited(_restoreConnection());
   }
 
   @override

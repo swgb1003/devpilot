@@ -24,6 +24,7 @@ export interface BinaryCommandResult {
 
 export interface CommandOptions {
   readonly environment?: NodeJS.ProcessEnv;
+  readonly cwd?: string;
 }
 
 const maxCapturedOutput = 32_768;
@@ -93,6 +94,7 @@ export async function runCommand(
             ],
             {
               ...(options.environment ? { env: options.environment } : {}),
+              ...(options.cwd ? { cwd: options.cwd } : {}),
               shell: false,
               stdio: ['ignore', 'pipe', 'pipe'],
               windowsVerbatimArguments: true,
@@ -101,6 +103,7 @@ export async function runCommand(
           )
         : spawn(executable, arguments_, {
             ...(options.environment ? { env: options.environment } : {}),
+            ...(options.cwd ? { cwd: options.cwd } : {}),
             shell: false,
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
@@ -194,6 +197,7 @@ export async function runBinaryCommand(
             ],
             {
               ...(options.environment ? { env: options.environment } : {}),
+              ...(options.cwd ? { cwd: options.cwd } : {}),
               shell: false,
               stdio: ['ignore', 'pipe', 'pipe'],
               windowsVerbatimArguments: true,
@@ -202,6 +206,7 @@ export async function runBinaryCommand(
           )
         : spawn(executable, arguments_, {
             ...(options.environment ? { env: options.environment } : {}),
+            ...(options.cwd ? { cwd: options.cwd } : {}),
             shell: false,
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,

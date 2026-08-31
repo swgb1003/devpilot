@@ -2,8 +2,13 @@ import 'package:devpilot_mobile/pairing/pairing_repository.dart';
 import 'package:flutter/material.dart';
 
 class ProjectSelectScreen extends StatefulWidget {
-  const ProjectSelectScreen({super.key, required this.onOpen});
+  const ProjectSelectScreen({
+    super.key,
+    required this.onOpen,
+    required this.onManageConnection,
+  });
   final VoidCallback onOpen;
+  final VoidCallback onManageConnection;
   @override
   State<ProjectSelectScreen> createState() => _ProjectSelectScreenState();
 }
@@ -39,7 +44,16 @@ class _ProjectSelectScreenState extends State<ProjectSelectScreen> {
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: const Color(0xFF080A0F),
     body: SafeArea(child: Padding(padding: const EdgeInsets.all(20), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const SizedBox(height: 22),
+      const SizedBox(height: 12),
+      Align(
+        alignment: Alignment.centerRight,
+        child: IconButton(
+          key: const ValueKey('manage-pc-connection'),
+          onPressed: widget.onManageConnection,
+          tooltip: 'PCとの接続を管理',
+          icon: const Icon(Icons.lan_rounded, color: Color(0xFF8CB6FF)),
+        ),
+      ),
       const Text('プロジェクトを選択', style: TextStyle(fontSize: 27, fontWeight: FontWeight.w800)),
       const SizedBox(height: 8),
       const Text('PCに登録したFlutterプロジェクトを選びます。', style: TextStyle(color: Color(0xFFB7C5DD))),

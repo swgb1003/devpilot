@@ -512,6 +512,7 @@ class _ResponsiveDesignScreen extends StatelessWidget {
 class _DevPilotScreenNavigatorState extends State<DevPilotScreenNavigator> {
   late DevPilotScreen _current;
   final List<DevPilotScreen> _history = [];
+  bool _managingExistingConnection = false;
 
   @override
   void initState() {
@@ -541,23 +542,31 @@ class _DevPilotScreenNavigatorState extends State<DevPilotScreenNavigator> {
   Widget build(BuildContext context) {
     if (_current == DevPilotScreen.pcPairing) {
       return PairingScreen(
-        onBack: _goBack,
+        onBack: () => setState(() {
+          _managingExistingConnection = false;
+          _current = DevPilotScreen.projectSelect;
+        }),
         onPaired: () {
           setState(() {
+            _managingExistingConnection = false;
             _current = DevPilotScreen.projectSelect;
           });
         },
+        skipReconnect: _managingExistingConnection,
       );
     }
     if (_current == DevPilotScreen.projectSelect) {
       return ProjectSelectScreen(
         onOpen: () => setState(() => _current = DevPilotScreen.dashboard),
+        onManageConnection: () => setState(() {
+          _managingExistingConnection = true;
+          _current = DevPilotScreen.pcPairing;
+        }),
       );
     }
     if (_current == DevPilotScreen.livePreview) {
       return LivePreviewScreen(
         onBack: _goBack,
-        onPointAndFix: () => _open(DevPilotScreen.pointAndFix),
       );
     }
     final spec = _screenSpecs[_current]!;

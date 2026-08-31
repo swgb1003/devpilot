@@ -178,6 +178,52 @@ class FixRequest {
   }
 }
 
+class ChangeSet {
+  const ChangeSet({
+    required this.id,
+    required this.state,
+    required this.summary,
+    required this.risks,
+    required this.files,
+  });
+
+  final String id;
+  final String state;
+  final String summary;
+  final List<String> risks;
+  final List<ChangeFile> files;
+
+  factory ChangeSet.fromJson(Map<String, dynamic> json) {
+    final files = json['files'];
+    final risks = json['risks'];
+    if (json['id'] is! String || json['state'] is! String ||
+        json['summary'] is! String || files is! List || risks is! List) {
+      throw const PairingException('修正案の応答が正しくありません。');
+    }
+    return ChangeSet(
+      id: json['id'] as String,
+      state: json['state'] as String,
+      summary: json['summary'] as String,
+      risks: risks.whereType<String>().toList(growable: false),
+      files: files.whereType<Map<String, dynamic>>().map(ChangeFile.fromJson).toList(growable: false),
+    );
+  }
+}
+
+class ChangeFile {
+  const ChangeFile({required this.path, required this.additions, required this.deletions});
+  final String path;
+  final int additions;
+  final int deletions;
+
+  factory ChangeFile.fromJson(Map<String, dynamic> json) {
+    if (json['path'] is! String || json['additions'] is! int || json['deletions'] is! int) {
+      throw const PairingException('修正対象ファイルの情報が正しくありません。');
+    }
+    return ChangeFile(path: json['path'] as String, additions: json['additions'] as int, deletions: json['deletions'] as int);
+  }
+}
+
 class PairingException implements Exception {
   const PairingException(this.message);
 
@@ -247,7 +293,10 @@ class PairingRepository {
               }
               if (!completer.isCompleted) {
                 completer.complete(
-                  _PendingConfirmation(ticket, endpointPayload),
+                  // Preserve every QR candidate. A later USB connection can
+                  // use 127.0.0.1 through adb reverse even if pairing first
+                  // completed over Wi-Fi.
+                  _PendingConfirmation(ticket, payload),
                 );
               }
             })
@@ -308,7 +357,7 @@ class PairingRepository {
     await _storage.write(key: _deviceIdKey, value: deviceId);
     await _storage.write(
       key: _endpointKey,
-      value: '${payload.hostCandidates.first}:${payload.port}',
+      value: jsonEncode({'hosts': payload.hostCandidates, 'port': payload.port}),
     );
     await _storage.write(
       key: _fingerprintKey,
@@ -478,6 +527,36 @@ class PairingRepository {
     return FixRequest.fromJson(_data(body));
   }
 
+  Future<ChangeSet> generateChangeProposal(String fixRequestId) async {
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null) {
+      throw const PairingException('PCとの接続が必要です。');
+    }
+    final body = await _requestJson(
+      payload,
+      'POST',
+      '/api/v1/mobile/fix-requests/$fixRequestId/proposals',
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    return ChangeSet.fromJson(_data(body));
+  }
+
+  Future<ChangeSet> applyChangeSet(String id) async {
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null) {
+      throw const PairingException('PCとの接続が必要です。');
+    }
+    final body = await _requestJson(
+      payload,
+      'POST',
+      '/api/v1/mobile/change-sets/$id/apply',
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    return ChangeSet.fromJson(_data(body));
+  }
+
   Future<Uint8List> previewImage(String artifactId) async {
     final token = await _storage.read(key: _accessTokenKey);
     final payload = await _storedEndpointPayload();
@@ -549,14 +628,30 @@ class PairingRepository {
     final endpoint = await _storage.read(key: _endpointKey);
     final fingerprint = await _storage.read(key: _fingerprintKey);
     if (endpoint == null || fingerprint == null) return null;
-    final separator = endpoint.lastIndexOf(':');
-    if (separator < 1) return null;
-    final host = endpoint.substring(0, separator);
-    final port = int.tryParse(endpoint.substring(separator + 1));
-    if (!_isPairingHost(host) || port == null) return null;
+    List<String> hosts = const [];
+    int? port;
+    try {
+      final decoded = jsonDecode(endpoint);
+      if (decoded is Map<String, dynamic> && decoded['hosts'] is List && decoded['port'] is int) {
+        hosts = (decoded['hosts'] as List).whereType<String>().where(_isPairingHost).toList(growable: false);
+        port = decoded['port'] as int;
+      }
+    } catch (_) {
+      // Legacy pairings stored a single "host:port" value.
+      final separator = endpoint.lastIndexOf(':');
+      if (separator >= 1) {
+        final host = endpoint.substring(0, separator);
+        final parsedPort = int.tryParse(endpoint.substring(separator + 1));
+        if (_isPairingHost(host) && parsedPort != null) {
+          hosts = [host];
+          port = parsedPort;
+        }
+      }
+    }
+    if (hosts.isEmpty || port == null || port < 1 || port > 65535) return null;
     return PairingQrPayload(
       pairingId: await _storage.read(key: _deviceIdKey) ?? '',
-      hostCandidates: [host],
+      hostCandidates: hosts,
       port: port,
       nonce: '',
       expiresAt: DateTime.now().toUtc().add(const Duration(days: 1)),
@@ -571,6 +666,25 @@ class PairingRepository {
     Map<String, String> headers = const {},
     Map<String, Object>? body,
   }) async {
+    PairingException? lastError;
+    for (final host in payload.hostCandidates) {
+      try {
+        return await _requestJsonAtHost(payload, host, method, path, headers: headers, body: body);
+      } on PairingException catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError ?? const PairingException('PCへの接続先が見つかりません。');
+  }
+
+  Future<Map<String, dynamic>> _requestJsonAtHost(
+    PairingQrPayload payload,
+    String host,
+    String method,
+    String path, {
+    required Map<String, String> headers,
+    required Map<String, Object>? body,
+  }) async {
     final client = HttpClient();
     client.badCertificateCallback =
         (certificate, host, port) => _fingerprintsMatch(
@@ -581,9 +695,7 @@ class PairingRepository {
       final request = await client
           .openUrl(
             method,
-            Uri.parse(
-              'https://${payload.hostCandidates.first}:${payload.port}$path',
-            ),
+            Uri.parse('https://$host:${payload.port}$path'),
           )
           .timeout(const Duration(seconds: 8));
       headers.forEach(request.headers.set);
