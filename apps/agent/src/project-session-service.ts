@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -32,6 +32,20 @@ function resolveFlutterExecutable(): string {
 }
 
 const flutterExecutable = resolveFlutterExecutable();
+
+function resolveDartExecutable(): string {
+  const configured = process.env.DEVPILOT_DART_COMMAND;
+  if (configured && (configured === 'dart' || existsSync(configured))) {
+    return configured;
+  }
+  if (process.platform === 'win32' && /\.bat$/i.test(flutterExecutable)) {
+    const bundled = join(dirname(flutterExecutable), 'dart.bat');
+    if (existsSync(bundled)) return bundled;
+  }
+  return process.platform === 'win32' ? 'dart.bat' : 'dart';
+}
+
+const dartExecutable = resolveDartExecutable();
 const flutterEnvironment: NodeJS.ProcessEnv = {
   ...process.env,
   CI: 'true',
@@ -137,6 +151,22 @@ export class ProjectSessionService {
       detail: result.timedOut
         ? 'flutter analyze がタイムアウトしました。'
         : output || (result.exitCode === 0 ? 'flutter analyze passed.' : `flutter analyze failed (code ${result.exitCode ?? 'unknown'}).`),
+    };
+  }
+
+  async checkDartFormat(rootPath: string, paths: readonly string[]): Promise<{ readonly passed: boolean; readonly detail: string }> {
+    const result = await runCommand(
+      dartExecutable,
+      ['format', '--output=none', '--set-exit-if-changed', ...paths],
+      60_000,
+      { environment: flutterEnvironment, cwd: rootPath },
+    );
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n').replaceAll('\r', '').trim().slice(-4_000);
+    return {
+      passed: result.exitCode === 0 && !result.timedOut,
+      detail: result.timedOut
+        ? 'dart format の確認がタイムアウトしました。'
+        : output || (result.exitCode === 0 ? 'dart format passed.' : 'Dartコードの整形が必要です。修正案を作り直してください。'),
     };
   }
 

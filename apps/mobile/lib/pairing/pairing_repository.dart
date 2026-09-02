@@ -106,6 +106,56 @@ class DevSession {
   factory DevSession.fromJson(Map<String, dynamic> json) => DevSession(id: json['id'] as String, projectId: json['projectId'] as String, deviceId: json['deviceId'] as String, state: json['state'] as String, detail: json['detail'] as String?);
 }
 
+class AgentDiagnostics {
+  const AgentDiagnostics({
+    required this.agentVersion,
+    required this.session,
+    required this.detectedDevices,
+    required this.authorizedDevices,
+    required this.recoveryAction,
+    required this.recoveryTitle,
+    required this.recoveryMessage,
+  });
+
+  final String agentVersion;
+  final DevSession? session;
+  final int detectedDevices;
+  final int authorizedDevices;
+  final String recoveryAction;
+  final String recoveryTitle;
+  final String recoveryMessage;
+
+  factory AgentDiagnostics.fromJson(Map<String, dynamic> json) {
+    final agent = json['agent'];
+    final devices = json['devices'];
+    final recovery = json['recovery'];
+    if (agent is! Map<String, dynamic> ||
+        devices is! Map<String, dynamic> ||
+        recovery is! Map<String, dynamic> ||
+        agent['version'] is! String ||
+        devices['detected'] is! int ||
+        devices['authorized'] is! int ||
+        recovery['action'] is! String ||
+        recovery['title'] is! String ||
+        recovery['message'] is! String) {
+      throw const PairingException('診断情報の形式が正しくありません。');
+    }
+    final session = json['session'];
+    if (session != null && session is! Map<String, dynamic>) {
+      throw const PairingException('開発セッションの診断情報が正しくありません。');
+    }
+    return AgentDiagnostics(
+      agentVersion: agent['version'] as String,
+      session: session == null ? null : DevSession.fromJson(session),
+      detectedDevices: devices['detected'] as int,
+      authorizedDevices: devices['authorized'] as int,
+      recoveryAction: recovery['action'] as String,
+      recoveryTitle: recovery['title'] as String,
+      recoveryMessage: recovery['message'] as String,
+    );
+  }
+}
+
 class PreviewArtifact {
   const PreviewArtifact({
     required this.id,
@@ -455,6 +505,22 @@ class PairingRepository {
     return data == null ? null : DevSession.fromJson(data);
   }
 
+  Future<AgentDiagnostics> diagnostics() async {
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null) {
+      throw const PairingException('PCとの接続情報がありません。');
+    }
+    final body = await _requestJson(
+      payload,
+      'GET',
+      '/api/v1/mobile/diagnostics',
+      headers: {'Authorization': 'Bearer $token'},
+      responseTimeout: const Duration(seconds: 30),
+    );
+    return AgentDiagnostics.fromJson(_data(body));
+  }
+
   Future<DevSession> startSession(String projectId) async {
     final token = await _storage.read(key: _accessTokenKey); final payload = await _storedEndpointPayload();
     if (token == null || payload == null) throw const PairingException('PCとの接続が必要です。');
@@ -608,6 +674,21 @@ class PairingRepository {
       payload,
       'POST',
       '/api/v1/mobile/change-sets/$id/apply',
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    return ChangeSet.fromJson(_data(body));
+  }
+
+  Future<ChangeSet> revertChangeSet(String id) async {
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null) {
+      throw const PairingException('PCとの接続情報がありません。');
+    }
+    final body = await _requestJson(
+      payload,
+      'POST',
+      '/api/v1/mobile/change-sets/$id/revert',
       headers: {'Authorization': 'Bearer $token'},
     );
     return ChangeSet.fromJson(_data(body));

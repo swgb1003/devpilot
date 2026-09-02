@@ -148,19 +148,29 @@ export class ChangeService {
       // project has pre-existing findings that are unrelated to this change.
       const baseline = await this.projectSessions.analyzeProject(root);
       copyProjectForAnalysis(root, stage);
-      for (const file of this.#files(id)) {
+      const proposalFiles = this.#files(id);
+      for (const file of proposalFiles) {
         writeFileSync(safeProjectFile(stage, file.path), file.after_content, 'utf8');
       }
-      const analysis = await this.projectSessions.analyzeProject(stage);
+      const format = await this.projectSessions.checkDartFormat(
+        stage,
+        proposalFiles.map((file) => file.path),
+      );
+      const analysis = format.passed
+        ? await this.projectSessions.analyzeProject(stage)
+        : undefined;
       const checkedAt = new Date().toISOString();
       const hasNoNewIssues =
+        analysis !== undefined &&
         baseline.issueCount !== undefined &&
         analysis.issueCount !== undefined &&
         analysis.issueCount <= baseline.issueCount;
-      const passed = analysis.passed || hasNoNewIssues;
-      const detail = passed && !analysis.passed
+      const passed = format.passed && (analysis?.passed == true || hasNoNewIssues);
+      const detail = !format.passed
+        ? format.detail
+        : passed && !analysis!.passed
         ? `既存の flutter analyze 指摘（${baseline.issueCount}件）から増えていません（修正案: ${analysis.issueCount}件）。`
-        : analysis.detail;
+        : analysis!.detail;
       this.#database.prepare(
         'UPDATE change_sets SET validation_state=?, validation_detail=?, validated_at=? WHERE id=?',
       ).run(passed ? 'passed' : 'failed', detail, checkedAt, id);
@@ -168,7 +178,7 @@ export class ChangeService {
       this.activities.append({
         kind: 'job.updated', severity: passed ? 'success' : 'error',
         message: passed ? '修正案の flutter analyze 検証に成功しました。' : '修正案の flutter analyze 検証に失敗しました。適用はブロックされます。',
-        metadata: { changeSetId: id, passed, baselineIssues: baseline.issueCount, proposalIssues: analysis.issueCount },
+        metadata: { changeSetId: id, passed, formatPassed: format.passed, baselineIssues: baseline.issueCount, proposalIssues: analysis?.issueCount },
       });
       return result;
     } finally {
@@ -214,7 +224,8 @@ export class ChangeService {
     if (row.state === 'reverted') return this.get(id);
     if (row.state !== 'applied') throw conflict('適用済みの修正案だけをロールバックできます。');
     const request = this.fixRequests.get(row.fix_request_id);
-    const root = realpathSync(this.projectSessions.projectForSession(request.sessionId).rootPath);
+    const project = this.projectSessions.projectForSession(request.sessionId);
+    const root = realpathSync(project.rootPath);
     const files = this.#files(id);
     for (const file of files) {
       const absolutePath = safeProjectFile(root, file.path);
@@ -226,10 +237,11 @@ export class ChangeService {
       writeFileSync(safeProjectFile(root, file.path), file.before_content, 'utf8');
     }
     this.#database.prepare("UPDATE change_sets SET state = 'reverted' WHERE id = ?").run(id);
+    const hotReloaded = this.projectSessions.hotReloadProject(project.id);
     const result = this.get(id);
     this.activities.append({
-      kind: 'change.reverted', severity: 'warning', message: '適用済み修正案を、保存済みの適用前内容へロールバックしました。',
-      metadata: { changeSetId: id, fixRequestId: request.id, fileCount: files.length },
+      kind: 'change.reverted', severity: 'warning', message: hotReloaded ? '適用済み修正案をロールバックし、Flutter ホットリロードを要求しました。' : '適用済み修正案を、保存済みの適用前内容へロールバックしました。Flutter は再起動してください。',
+      metadata: { changeSetId: id, fixRequestId: request.id, fileCount: files.length, hotReloaded },
     });
     return result;
   }

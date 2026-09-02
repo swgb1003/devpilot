@@ -60,6 +60,12 @@ interface PairingState {
 interface RegisteredProject { readonly id: string; readonly name: string; readonly rootPath: string; readonly status: string }
 interface AndroidDevice { readonly id: string; readonly name: string; readonly isAuthorized: boolean }
 interface DevSession { readonly id: string; readonly projectId: string; readonly deviceId: string; readonly state: string; readonly detail?: string }
+interface AgentDiagnostics {
+  readonly agent: { readonly status: string; readonly version: string };
+  readonly session: DevSession | null;
+  readonly devices: { readonly detected: number; readonly authorized: number; readonly names: readonly string[] };
+  readonly recovery: { readonly action: 'none' | 'wait' | 'open_session' | 'restart_session'; readonly title: string; readonly message: string };
+}
 
 const agentEndpoint = 'http://127.0.0.1:47831';
 
@@ -92,6 +98,9 @@ export function App() {
   const [projectPath, setProjectPath] = useState('');
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [m4Error, setM4Error] = useState<string | undefined>();
+  const [diagnostics, setDiagnostics] = useState<AgentDiagnostics | undefined>();
+  const [diagnosticsError, setDiagnosticsError] = useState<string | undefined>();
+  const [isCheckingDiagnostics, setIsCheckingDiagnostics] = useState(false);
 
   const refreshM4 = useCallback(async () => {
     try {
@@ -108,6 +117,22 @@ export function App() {
   }, []);
 
   useEffect(() => { void refreshM4(); }, [refreshM4]);
+  const refreshDiagnostics = useCallback(async () => {
+    setIsCheckingDiagnostics(true);
+    setDiagnosticsError(undefined);
+    try {
+      const response = await fetch(`${agentEndpoint}/api/v1/diagnostics`);
+      if (!response.ok) throw new Error(`診断情報を取得できませんでした (HTTP ${response.status})。`);
+      const body = (await response.json()) as { data: AgentDiagnostics };
+      setDiagnostics(body.data);
+    } catch (caught) {
+      setDiagnostics(undefined);
+      setDiagnosticsError(caught instanceof Error ? caught.message : '診断情報を取得できませんでした。');
+    } finally {
+      setIsCheckingDiagnostics(false);
+    }
+  }, []);
+  useEffect(() => { void refreshDiagnostics(); }, [refreshDiagnostics]);
   const refreshSession = useCallback(async () => {
     try {
       const response = await fetch(`${agentEndpoint}/api/v1/session`);
@@ -344,6 +369,41 @@ export function App() {
           {session?.state === 'starting' || session?.state === 'running' ? <button className="primary-button" type="button" onClick={() => void stopSession()}>開発セッションを終了</button> : <button className="primary-button" type="button" onClick={() => void startSession()}>Open Dev Session</button>}
           {session?.detail ? <p className="muted">{session.detail}</p> : null}{m4Error ? <p className="pairing-error">{m4Error}</p> : null}
         </div><div className="pairing-qr-placeholder" aria-hidden="true">M4</div></div>
+      </section>
+
+      <section className="status-card diagnostics-card" aria-labelledby="diagnostics-title">
+        <div className="status-heading">
+          <div>
+            <p className="eyebrow">M9 Recovery</p>
+            <h2 id="diagnostics-title">診断・復旧</h2>
+          </div>
+          <span className={`status-pill ${diagnostics?.recovery.action === 'none' ? 'is-ready' : ''}`}>
+            {diagnostics?.recovery.action === 'none' ? 'Ready' : diagnostics ? 'Action needed' : 'Checking'}
+          </span>
+        </div>
+        <div className="connection-content">
+          {diagnostics ? (
+            <>
+              <p><strong>{diagnostics.recovery.title}</strong></p>
+              <p className="muted">{diagnostics.recovery.message}</p>
+              <dl className="diagnostic-list">
+                <div><dt>Local Agent</dt><dd>ready · v{diagnostics.agent.version}</dd></div>
+                <div><dt>Android</dt><dd>{diagnostics.devices.authorized}/{diagnostics.devices.detected} authorized{diagnostics.devices.names.length ? ` · ${diagnostics.devices.names.join(', ')}` : ''}</dd></div>
+                <div><dt>Flutter session</dt><dd>{diagnostics.session?.state ?? 'not started'}{diagnostics.session?.detail ? ` · ${diagnostics.session.detail.split('\n')[0]}` : ''}</dd></div>
+              </dl>
+            </>
+          ) : (
+            <p className="pairing-error">{diagnosticsError ?? '診断情報を読み込んでいます。'}</p>
+          )}
+          <div className="action-row">
+            <button className="quiet-button" type="button" disabled={isCheckingDiagnostics} onClick={() => void refreshDiagnostics()}>
+              {isCheckingDiagnostics ? '確認中…' : '状態を再確認'}
+            </button>
+            {diagnostics?.recovery.action === 'open_session' || diagnostics?.recovery.action === 'restart_session' ? (
+              <button className="primary-button" type="button" onClick={() => void startSession()}>Open Dev Session</button>
+            ) : null}
+          </div>
+        </div>
       </section>
 
       <section className="status-card" aria-labelledby="agent-title">

@@ -239,6 +239,48 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
   const eventHub = new AgentEventHub();
   const unsubscribe = activities.subscribe((activity) => eventHub.publishActivity(activity));
 
+  const collectDiagnostics = async () => {
+    const session = projectSessions.getSession() ?? null;
+    const devices = await projectSessions.devices();
+    const authorizedDevices = devices.filter((device) => device.isAuthorized);
+    let recovery: { action: string; title: string; message: string };
+    if (!session) {
+      recovery = {
+        action: 'open_session',
+        title: '開発セッションを開始してください',
+        message: 'PC版でプロジェクトとAndroid端末を選び、Open Dev Sessionを押してください。',
+      };
+    } else if (session.state === 'running') {
+      recovery = {
+        action: 'none',
+        title: '準備完了',
+        message: 'AgentとFlutter開発セッションは実行中です。プレビューの更新やPoint & Fixを続けられます。',
+      };
+    } else if (session.state === 'starting') {
+      recovery = {
+        action: 'wait',
+        title: 'Flutterを起動しています',
+        message: 'アプリの起動が完了するまで待ってから、スマホ側で更新を押してください。',
+      };
+    } else {
+      recovery = {
+        action: 'restart_session',
+        title: '開発セッションを再開してください',
+        message: 'PC版でOpen Dev Sessionを押し、Flutterをもう一度起動してください。',
+      };
+    }
+    return {
+      agent: { status: 'ready', version: '0.3.0' },
+      session,
+      devices: {
+        detected: devices.length,
+        authorized: authorizedDevices.length,
+        names: authorizedDevices.map((device) => device.name),
+      },
+      recovery,
+    };
+  };
+
   const requestHandler = (request: IncomingMessage, response: ServerResponse): void => {
     void (async () => {
       const traceId = randomUUID();
@@ -280,6 +322,7 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
         const mobileChangeSetMatch = /^\/api\/v1\/mobile\/change-sets\/([^/]+)$/.exec(url.pathname);
         const mobileChangeSetApplyMatch = /^\/api\/v1\/mobile\/change-sets\/([^/]+)\/apply$/.exec(url.pathname);
         const mobileChangeSetValidateMatch = /^\/api\/v1\/mobile\/change-sets\/([^/]+)\/validate$/.exec(url.pathname);
+        const mobileChangeSetRevertMatch = /^\/api\/v1\/mobile\/change-sets\/([^/]+)\/revert$/.exec(url.pathname);
         const desktopChangeSetRevertMatch = /^\/api\/v1\/change-sets\/([^/]+)\/revert$/.exec(url.pathname);
         const desktopArtifactMatch = /^\/api\/v1\/artifacts\/([^/]+)$/.exec(url.pathname);
 
@@ -339,6 +382,7 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
         const mobileProjects = request.method === 'GET' && url.pathname === '/api/v1/mobile/projects';
         const mobileDevices = request.method === 'GET' && url.pathname === '/api/v1/mobile/devices';
         const mobileSession = request.method === 'GET' && url.pathname === '/api/v1/mobile/session';
+        const mobileDiagnostics = request.method === 'GET' && url.pathname === '/api/v1/mobile/diagnostics';
         const mobileStart = request.method === 'POST' && url.pathname === '/api/v1/mobile/sessions';
         const mobileStop = request.method === 'POST' && url.pathname === '/api/v1/mobile/session/stop';
         const mobileCapture = request.method === 'POST' && url.pathname === '/api/v1/mobile/previews';
@@ -351,11 +395,13 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
         const mobileChangeSet = request.method === 'GET' && mobileChangeSetMatch !== null;
         const mobileChangeSetApply = request.method === 'POST' && mobileChangeSetApplyMatch !== null;
         const mobileChangeSetValidate = request.method === 'POST' && mobileChangeSetValidateMatch !== null;
-        if (mobileProjects || mobileDevices || mobileSession || mobileStart || mobileStop || mobileCapture || mobileArtifact || mobileSessionScreenshot || mobileFixRequest || mobileFixRequestApprove || mobileFixRequestProposal || mobileFixRequestChangeSet || mobileChangeSet || mobileChangeSetApply || mobileChangeSetValidate) {
+        const mobileChangeSetRevert = request.method === 'POST' && mobileChangeSetRevertMatch !== null;
+        if (mobileProjects || mobileDevices || mobileSession || mobileDiagnostics || mobileStart || mobileStop || mobileCapture || mobileArtifact || mobileSessionScreenshot || mobileFixRequest || mobileFixRequestApprove || mobileFixRequestProposal || mobileFixRequestChangeSet || mobileChangeSet || mobileChangeSetApply || mobileChangeSetValidate || mobileChangeSetRevert) {
           pairingService.authenticate(requireBearerToken(request.headers.authorization));
           if (mobileProjects) { sendJson(request, response, config, 200, { data: projectSessions.listProjects() }); return; }
           if (mobileDevices) { sendJson(request, response, config, 200, { data: await projectSessions.devices() }); return; }
           if (mobileSession) { sendJson(request, response, config, 200, { data: projectSessions.getSession() ?? null }); return; }
+          if (mobileDiagnostics) { sendJson(request, response, config, 200, { data: await collectDiagnostics() }); return; }
           if (mobileStop) { const current = projectSessions.getSession(); if (!current) throw new AgentError({ code: 'REQUEST_INVALID', message: '終了する開発セッションがありません。', status: 400, action: 'CHECK_REQUEST' }); sendJson(request,response,config,200,{data:await projectSessions.stop(current.id)}); return; }
           if (mobileCapture) { sendJson(request, response, config, 201, { data: await deviceController.capturePreview() }); return; }
           if (mobileSessionScreenshot) { sendJson(request, response, config, 201, { data: await deviceController.capturePreview(mobileSessionScreenshotMatch![1]!) }); return; }
@@ -382,6 +428,7 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
           if (mobileChangeSet) { sendJson(request, response, config, 200, { data: changes.get(mobileChangeSetMatch![1]!) }); return; }
           if (mobileChangeSetValidate) { sendJson(request, response, config, 200, { data: await changes.validate(mobileChangeSetValidateMatch![1]!) }); return; }
           if (mobileChangeSetApply) { sendJson(request, response, config, 200, { data: await changes.apply(mobileChangeSetApplyMatch![1]!) }); return; }
+          if (mobileChangeSetRevert) { sendJson(request, response, config, 200, { data: changes.revert(mobileChangeSetRevertMatch![1]!) }); return; }
           if (mobileArtifact) {
             const artifact = screenshotArtifacts.read(mobileArtifactMatch![1]!);
             if (!artifact) throw new AgentError({ code: 'ARTIFACT_NOT_FOUND', message: 'プレビュー画像の有効期限が切れました。もう一度更新してください。', status: 404, action: 'RETRY', retryable: true });
@@ -404,6 +451,7 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
           url.pathname === '/api/v1/sessions' ||
           sessionStopMatch !== null ||
           url.pathname === '/api/v1/session' ||
+          url.pathname === '/api/v1/diagnostics' ||
           url.pathname === '/api/v1/previews/capture' ||
           desktopArtifactMatch !== null ||
           desktopChangeSetRevertMatch !== null;
@@ -442,6 +490,7 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
         if (request.method === 'POST' && projectPreflightMatch) { sendJson(request,response,config,200,{data:await projectSessions.preflight(projectPreflightMatch[1]!)}); return; }
         if (request.method === 'GET' && url.pathname === '/api/v1/devices') { sendJson(request,response,config,200,{data:await projectSessions.devices()}); return; }
         if (request.method === 'GET' && url.pathname === '/api/v1/session') { sendJson(request,response,config,200,{data:projectSessions.getSession() ?? null}); return; }
+        if (request.method === 'GET' && url.pathname === '/api/v1/diagnostics') { sendJson(request,response,config,200,{data:await collectDiagnostics()}); return; }
         if (request.method === 'POST' && url.pathname === '/api/v1/sessions') { const input = await readJson(request) as { projectId?: unknown; deviceId?: unknown }; if (typeof input.projectId !== 'string' || typeof input.deviceId !== 'string') throw new AgentError({ code: 'REQUEST_INVALID', message: 'projectId と deviceId が必要です。', status: 400, action: 'CHECK_REQUEST' }); sendJson(request,response,config,201,{data:await projectSessions.start(input.projectId,input.deviceId)}); return; }
         if (request.method === 'POST' && sessionStopMatch) { sendJson(request,response,config,200,{data:await projectSessions.stop(sessionStopMatch[1]!)}); return; }
         if (request.method === 'POST' && url.pathname === '/api/v1/previews/capture') { sendJson(request,response,config,201,{data:await deviceController.capturePreview()}); return; }

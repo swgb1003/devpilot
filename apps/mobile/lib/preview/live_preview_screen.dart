@@ -30,6 +30,9 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
   ChangeSet? _changeSet;
   bool _submittingFix = false;
   String? _fixError;
+  AgentDiagnostics? _diagnostics;
+  String? _diagnosticError;
+  bool _checkingDiagnostics = false;
 
   @override
   void initState() {
@@ -39,6 +42,7 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
     _refresh();
     _restoreLatestChangeSet();
     _readOverlayStatus();
+    _checkDiagnostics();
   }
 
   @override
@@ -228,6 +232,37 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
     }
   }
 
+  Future<void> _revertProposal() async {
+    final proposal = _changeSet;
+    if (proposal == null || proposal.state != 'applied' || _submittingFix) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('この修正を取り消しますか？'),
+        content: const Text('この修正案が変更したファイルだけを、適用前の内容に戻します。ほかの手動変更がある場合は安全のため取り消しません。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('キャンセル')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('取り消す')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() {
+      _submittingFix = true;
+      _fixError = null;
+    });
+    try {
+      final reverted = await _repository.revertChangeSet(proposal.id);
+      if (mounted) setState(() => _changeSet = reverted);
+    } on PairingException catch (error) {
+      if (!await _restoreLatestChangeSet() && mounted) {
+        setState(() => _fixError = error.message);
+      }
+    } finally {
+      if (mounted) setState(() => _submittingFix = false);
+    }
+  }
+
   Future<void> _validateProposal() async {
     final proposal = _changeSet;
     if (proposal == null || proposal.state != 'proposed' || _submittingFix) return;
@@ -261,6 +296,23 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
     }
   }
 
+  Future<void> _checkDiagnostics() async {
+    if (_checkingDiagnostics) return;
+    setState(() {
+      _checkingDiagnostics = true;
+      _diagnosticError = null;
+    });
+    try {
+      final diagnostics = await _repository.diagnostics();
+      if (!mounted) return;
+      setState(() => _diagnostics = diagnostics);
+    } on PairingException catch (error) {
+      if (mounted) setState(() => _diagnosticError = error.message);
+    } finally {
+      if (mounted) setState(() => _checkingDiagnostics = false);
+    }
+  }
+
   Future<void> _refresh() async {
     if (_refreshing) return;
     setState(() {
@@ -275,6 +327,7 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
         _artifact = artifact;
         _image = image;
       });
+      _checkDiagnostics();
     } on PairingException catch (error) {
       if (!mounted) return;
       setState(() => _error = error.message);
@@ -351,6 +404,7 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
                   style: TextStyle(color: Colors.blueGrey.shade200, fontSize: 13),
                 ),
                 const SizedBox(height: 16),
+                _diagnosticsCard(),
                 if (_pendingSelection case final selection?)
                   Container(
                     width: double.infinity,
@@ -486,6 +540,20 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
                             icon: const Icon(Icons.check_circle_outline_rounded),
                             label: const Text('この修正案を適用'),
                             style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2D9B6F), minimumSize: const Size.fromHeight(42)),
+                          ),
+                        ],
+                        if (changeSet.state == 'applied') ...[
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            key: const ValueKey('change-set-revert'),
+                            onPressed: _submittingFix ? null : _revertProposal,
+                            icon: const Icon(Icons.undo_rounded),
+                            label: const Text('この修正を取り消す'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFFFFC2CA),
+                              side: const BorderSide(color: Color(0xFFFF7F91)),
+                              minimumSize: const Size.fromHeight(42),
+                            ),
                           ),
                         ],
                       ],
@@ -647,6 +715,69 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
           Icon(Icons.phone_android_rounded, color: Color(0xFF6CA0FF), size: 54),
           SizedBox(height: 12),
           Text('実機プレビューを取得できません', style: TextStyle(color: Colors.white)),
+        ],
+      ),
+    );
+  }
+
+  Widget _diagnosticsCard() {
+    final diagnostics = _diagnostics;
+    final ready = diagnostics?.recoveryAction == 'none';
+    final color = ready
+        ? const Color(0xFF54E5A0)
+        : diagnostics == null
+            ? const Color(0xFFFFA5AE)
+            : const Color(0xFFFFD08A);
+    final title = diagnostics?.recoveryTitle ?? 'PCの状態を確認しています';
+    final message = _diagnosticError ??
+        diagnostics?.recoveryMessage ??
+        'Agent、Android端末、Flutter開発セッションの状態を確認します。';
+    final detail = diagnostics == null
+        ? (_checkingDiagnostics ? '確認中…' : 'PCに接続できません。再確認してください。')
+        : 'Agent ${diagnostics.agentVersion} ・ Android ${diagnostics.authorizedDevices}/${diagnostics.detectedDevices} ・ '
+            'Flutter ${diagnostics.session?.state ?? 'not started'}';
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: ready ? const Color(0x172DE69A) : const Color(0x22101A2B),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.75)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            ready ? Icons.check_circle_rounded : Icons.monitor_heart_outlined,
+            color: color,
+            size: 19,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 12)),
+                const SizedBox(height: 2),
+                Text(message, style: const TextStyle(color: Color(0xFFCFD9ED), fontSize: 11)),
+                const SizedBox(height: 3),
+                Text(detail, style: const TextStyle(color: Color(0xFF8FA3C5), fontSize: 10)),
+              ],
+            ),
+          ),
+          IconButton(
+            key: const ValueKey('live-preview-diagnostics-refresh'),
+            onPressed: _checkingDiagnostics ? null : _checkDiagnostics,
+            tooltip: '状態を再確認',
+            icon: _checkingDiagnostics
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.refresh_rounded),
+            color: const Color(0xFFAAC5FF),
+            iconSize: 19,
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            padding: EdgeInsets.zero,
+          ),
         ],
       ),
     );

@@ -243,6 +243,29 @@ test('GET /health reports a ready agent', async (context) => {
   );
 });
 
+test('M9 diagnostics gives a concrete recovery action when no session is running', async (context) => {
+  const server = createAgentServer({ config: testConfig() });
+  context.after(() => server.close());
+  await listen(server, 0);
+  const address = server.address() as AddressInfo;
+
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+  const body = (await response.json()) as {
+    data: {
+      agent: { status: string; version: string };
+      session: unknown;
+      recovery: { action: string; title: string; message: string };
+    };
+  };
+
+  assert.equal(response.status, 200);
+  assert.equal(body.data.agent.status, 'ready');
+  assert.equal(body.data.session, null);
+  assert.equal(body.data.recovery.action, 'open_session');
+  assert.ok(body.data.recovery.title.length > 0);
+  assert.ok(body.data.recovery.message.length > 0);
+});
+
 test('M2 core can serve the same API and WebSocket upgrade surface over TLS', async (context) => {
   const certificate = await generate([{ name: 'commonName', value: 'localhost' }], {
     algorithm: 'sha256',
