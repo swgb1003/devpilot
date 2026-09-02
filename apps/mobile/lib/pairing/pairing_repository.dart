@@ -185,6 +185,8 @@ class ChangeSet {
     required this.summary,
     required this.risks,
     required this.files,
+    required this.validationState,
+    this.validationDetail,
   });
 
   final String id;
@@ -192,13 +194,20 @@ class ChangeSet {
   final String summary;
   final List<String> risks;
   final List<ChangeFile> files;
+  final String validationState;
+  final String? validationDetail;
 
   factory ChangeSet.fromJson(Map<String, dynamic> json) {
     final files = json['files'];
     final risks = json['risks'];
     if (json['id'] is! String || json['state'] is! String ||
-        json['summary'] is! String || files is! List || risks is! List) {
+        json['summary'] is! String || files is! List || risks is! List ||
+        json['validation'] is! Map<String, dynamic>) {
       throw const PairingException('修正案の応答が正しくありません。');
+    }
+    final validation = json['validation'] as Map<String, dynamic>;
+    if (validation['state'] is! String) {
+      throw const PairingException('修正案の検証情報が正しくありません。');
     }
     return ChangeSet(
       id: json['id'] as String,
@@ -206,6 +215,8 @@ class ChangeSet {
       summary: json['summary'] as String,
       risks: risks.whereType<String>().toList(growable: false),
       files: files.whereType<Map<String, dynamic>>().map(ChangeFile.fromJson).toList(growable: false),
+      validationState: validation['state'] as String,
+      validationDetail: validation['detail'] as String?,
     );
   }
 }
@@ -246,6 +257,8 @@ class PairingRepository {
   static const _pendingQrKey = 'pairing.pendingQr';
   static const _privateKeyKey = 'pairing.ed25519.private';
   static const _publicKeyKey = 'pairing.ed25519.public';
+  static const _lastFixRequestIdKey = 'pointFix.lastFixRequestId';
+  static const _lastChangeSetIdKey = 'pointFix.lastChangeSetId';
 
   final FlutterSecureStorage _storage;
 
@@ -365,6 +378,8 @@ class PairingRepository {
     );
     await _storage.delete(key: _ticketKey);
     await _storage.delete(key: _pendingQrKey);
+    await _storage.delete(key: _lastFixRequestIdKey);
+    await _storage.delete(key: _lastChangeSetIdKey);
     return const PairingPollResult(status: 'approved', isPaired: true);
   }
 
@@ -509,7 +524,10 @@ class PairingRepository {
         'idempotencyKey': 'mobile-$requestId',
       },
     );
-    return FixRequest.fromJson(_data(body));
+    final request = FixRequest.fromJson(_data(body));
+    await _storage.write(key: _lastFixRequestIdKey, value: request.id);
+    await _storage.delete(key: _lastChangeSetIdKey);
+    return request;
   }
 
   Future<FixRequest> approveFixRequest(String id) async {
@@ -538,8 +556,46 @@ class PairingRepository {
       'POST',
       '/api/v1/mobile/fix-requests/$fixRequestId/proposals',
       headers: {'Authorization': 'Bearer $token'},
+      responseTimeout: const Duration(seconds: 210),
     );
-    return ChangeSet.fromJson(_data(body));
+    final changeSet = ChangeSet.fromJson(_data(body));
+    await _storage.write(key: _lastChangeSetIdKey, value: changeSet.id);
+    return changeSet;
+  }
+
+  Future<ChangeSet?> restoreLatestChangeSet() async {
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null) return null;
+
+    final storedChangeSetId = await _storage.read(key: _lastChangeSetIdKey);
+    if (storedChangeSetId != null) {
+      try {
+        final body = await _requestJson(
+          payload,
+          'GET',
+          '/api/v1/mobile/change-sets/$storedChangeSetId',
+          headers: {'Authorization': 'Bearer $token'},
+        );
+        return ChangeSet.fromJson(_data(body));
+      } on PairingException {
+        await _storage.delete(key: _lastChangeSetIdKey);
+      }
+    }
+
+    final fixRequestId = await _storage.read(key: _lastFixRequestIdKey);
+    if (fixRequestId == null) return null;
+    final body = await _requestJson(
+      payload,
+      'GET',
+      '/api/v1/mobile/fix-requests/$fixRequestId/change-set',
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    final data = body['data'];
+    if (data is! Map<String, dynamic>) return null;
+    final changeSet = ChangeSet.fromJson(data);
+    await _storage.write(key: _lastChangeSetIdKey, value: changeSet.id);
+    return changeSet;
   }
 
   Future<ChangeSet> applyChangeSet(String id) async {
@@ -553,6 +609,22 @@ class PairingRepository {
       'POST',
       '/api/v1/mobile/change-sets/$id/apply',
       headers: {'Authorization': 'Bearer $token'},
+    );
+    return ChangeSet.fromJson(_data(body));
+  }
+
+  Future<ChangeSet> validateChangeSet(String id) async {
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null) {
+      throw const PairingException('PCとの接続が必要です。');
+    }
+    final body = await _requestJson(
+      payload,
+      'POST',
+      '/api/v1/mobile/change-sets/$id/validate',
+      headers: {'Authorization': 'Bearer $token'},
+      responseTimeout: const Duration(seconds: 150),
     );
     return ChangeSet.fromJson(_data(body));
   }
@@ -665,11 +737,20 @@ class PairingRepository {
     String path, {
     Map<String, String> headers = const {},
     Map<String, Object>? body,
+    Duration responseTimeout = const Duration(seconds: 10),
   }) async {
     PairingException? lastError;
     for (final host in payload.hostCandidates) {
       try {
-        return await _requestJsonAtHost(payload, host, method, path, headers: headers, body: body);
+        return await _requestJsonAtHost(
+          payload,
+          host,
+          method,
+          path,
+          headers: headers,
+          body: body,
+          responseTimeout: responseTimeout,
+        );
       } on PairingException catch (error) {
         lastError = error;
       }
@@ -684,6 +765,7 @@ class PairingRepository {
     String path, {
     required Map<String, String> headers,
     required Map<String, Object>? body,
+    required Duration responseTimeout,
   }) async {
     final client = HttpClient();
     client.badCertificateCallback =
@@ -702,11 +784,11 @@ class PairingRepository {
       request.headers.contentType = ContentType.json;
       if (body != null) request.write(jsonEncode(body));
       final response = await request.close().timeout(
-        const Duration(seconds: 10),
+        responseTimeout,
       );
       final raw = await utf8
           .decodeStream(response)
-          .timeout(const Duration(seconds: 10));
+          .timeout(responseTimeout);
       final decoded = raw.isEmpty ? <String, dynamic>{} : jsonDecode(raw);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         final error = decoded is Map<String, dynamic> ? decoded['error'] : null;

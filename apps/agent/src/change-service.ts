@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 
-import type { ChangeSet, ProposedFileChange } from '@devpilot/contracts';
+import type { ChangeSet, ChangeValidation, ChangeValidationState, ProposedFileChange } from '@devpilot/contracts';
 
 import { ActivityStore } from './activity-store.js';
 import { CodexCliProvider, type CodexContextFile } from './codex-cli-provider.js';
@@ -14,11 +15,14 @@ import { ProjectSessionService } from './project-session-service.js';
 interface ChangeSetRow {
   readonly id: string;
   readonly fix_request_id: string;
-  readonly state: 'proposed' | 'applied' | 'conflicted';
+  readonly state: 'proposed' | 'applied' | 'reverted' | 'conflicted';
   readonly summary: string;
   readonly risks_json: string;
   readonly created_at: string;
   readonly applied_at: string | null;
+  readonly validation_state: ChangeValidationState;
+  readonly validation_detail: string | null;
+  readonly validated_at: string | null;
 }
 
 interface ChangeFileRow {
@@ -57,7 +61,10 @@ export class ChangeService {
         summary TEXT NOT NULL,
         risks_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        applied_at TEXT
+        applied_at TEXT,
+        validation_state TEXT NOT NULL DEFAULT 'not_run',
+        validation_detail TEXT,
+        validated_at TEXT
       );
       CREATE TABLE IF NOT EXISTS change_set_files (
         change_set_id TEXT NOT NULL,
@@ -71,6 +78,9 @@ export class ChangeService {
         PRIMARY KEY (change_set_id, path)
       );
     `);
+    this.#ensureColumn('validation_state', "TEXT NOT NULL DEFAULT 'not_run'");
+    this.#ensureColumn('validation_detail', 'TEXT');
+    this.#ensureColumn('validated_at', 'TEXT');
   }
 
   async generate(fixRequestId: string): Promise<ChangeSet> {
@@ -93,8 +103,10 @@ export class ChangeService {
     const id = randomUUID();
     const createdAt = new Date().toISOString();
     this.#database.prepare(
-      'INSERT INTO change_sets (id,fix_request_id,state,summary,risks_json,created_at,applied_at) VALUES (?,?,?,?,?,?,?)',
-    ).run(id, request.id, 'proposed', proposal.summary.trim(), JSON.stringify(proposal.risks), createdAt, null);
+      `INSERT INTO change_sets
+       (id,fix_request_id,state,summary,risks_json,created_at,applied_at,validation_state,validation_detail,validated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    ).run(id, request.id, 'proposed', proposal.summary.trim(), JSON.stringify(proposal.risks), createdAt, null, 'not_run', null, null);
     const insertFile = this.#database.prepare(
       `INSERT INTO change_set_files
         (change_set_id,path,before_sha256,after_sha256,before_content,after_content,additions,deletions)
@@ -117,12 +129,63 @@ export class ChangeService {
     return toChangeSet(row, files);
   }
 
-  apply(id: string): ChangeSet {
+  latestForFixRequest(fixRequestId: string): ChangeSet | undefined {
+    const row = this.#database.prepare(
+      'SELECT id,fix_request_id,state,summary,risks_json,created_at,applied_at,validation_state,validation_detail,validated_at FROM change_sets WHERE fix_request_id=? ORDER BY created_at DESC LIMIT 1',
+    ).get(fixRequestId) as ChangeSetRow | undefined;
+    return row ? toChangeSet(row, this.#files(row.id)) : undefined;
+  }
+
+  async validate(id: string): Promise<ChangeSet> {
+    const row = this.#row(id);
+    if (row.state !== 'proposed') throw conflict('未適用の修正案だけを検証できます。');
+    const request = this.fixRequests.get(row.fix_request_id);
+    const root = realpathSync(this.projectSessions.projectForSession(request.sessionId).rootPath);
+    const stage = mkdtempSync(join(tmpdir(), 'devpilot-analyze-'));
+    try {
+      // Existing projects can already contain analyzer warnings. A proposal is
+      // safe when it does not introduce any additional issues, even if the
+      // project has pre-existing findings that are unrelated to this change.
+      const baseline = await this.projectSessions.analyzeProject(root);
+      copyProjectForAnalysis(root, stage);
+      for (const file of this.#files(id)) {
+        writeFileSync(safeProjectFile(stage, file.path), file.after_content, 'utf8');
+      }
+      const analysis = await this.projectSessions.analyzeProject(stage);
+      const checkedAt = new Date().toISOString();
+      const hasNoNewIssues =
+        baseline.issueCount !== undefined &&
+        analysis.issueCount !== undefined &&
+        analysis.issueCount <= baseline.issueCount;
+      const passed = analysis.passed || hasNoNewIssues;
+      const detail = passed && !analysis.passed
+        ? `既存の flutter analyze 指摘（${baseline.issueCount}件）から増えていません（修正案: ${analysis.issueCount}件）。`
+        : analysis.detail;
+      this.#database.prepare(
+        'UPDATE change_sets SET validation_state=?, validation_detail=?, validated_at=? WHERE id=?',
+      ).run(passed ? 'passed' : 'failed', detail, checkedAt, id);
+      const result = this.get(id);
+      this.activities.append({
+        kind: 'job.updated', severity: passed ? 'success' : 'error',
+        message: passed ? '修正案の flutter analyze 検証に成功しました。' : '修正案の flutter analyze 検証に失敗しました。適用はブロックされます。',
+        metadata: { changeSetId: id, passed, baselineIssues: baseline.issueCount, proposalIssues: analysis.issueCount },
+      });
+      return result;
+    } finally {
+      rmSync(stage, { recursive: true, force: true, maxRetries: 2 });
+    }
+  }
+
+  async apply(id: string): Promise<ChangeSet> {
     const row = this.#row(id);
     if (row.state === 'applied') return this.get(id);
     if (row.state !== 'proposed') throw conflict('この修正案は適用できる状態ではありません。');
+    if (row.validation_state !== 'passed') {
+      throw rejected('修正案を適用する前に flutter analyze の検証を成功させてください。');
+    }
     const request = this.fixRequests.get(row.fix_request_id);
-    const rootPath = this.projectSessions.projectForSession(request.sessionId).rootPath;
+    const requestProject = this.projectSessions.projectForSession(request.sessionId);
+    const rootPath = requestProject.rootPath;
     const root = realpathSync(rootPath);
     const files = this.#files(id);
     for (const file of files) {
@@ -137,9 +200,35 @@ export class ChangeService {
     }
     const appliedAt = new Date().toISOString();
     this.#database.prepare("UPDATE change_sets SET state = 'applied', applied_at = ? WHERE id = ?").run(appliedAt, id);
+    const hotReloaded = this.projectSessions.hotReloadProject(requestProject.id);
     const result = this.get(id);
     this.activities.append({
-      kind: 'change.applied', severity: 'success', message: '承認された Dart 修正案をプロジェクトへ適用しました。',
+      kind: 'change.applied', severity: 'success', message: hotReloaded ? '修正案を適用し、Flutter ホットリロードを要求しました。' : '承認された Dart 修正案をプロジェクトへ適用しました。Flutter は再起動してください。',
+      metadata: { changeSetId: id, fixRequestId: request.id, fileCount: files.length, hotReloaded },
+    });
+    return result;
+  }
+
+  revert(id: string): ChangeSet {
+    const row = this.#row(id);
+    if (row.state === 'reverted') return this.get(id);
+    if (row.state !== 'applied') throw conflict('適用済みの修正案だけをロールバックできます。');
+    const request = this.fixRequests.get(row.fix_request_id);
+    const root = realpathSync(this.projectSessions.projectForSession(request.sessionId).rootPath);
+    const files = this.#files(id);
+    for (const file of files) {
+      const absolutePath = safeProjectFile(root, file.path);
+      if (!isRegularFile(absolutePath) || sha256(readFileSync(absolutePath, 'utf8')) !== file.after_sha256) {
+        throw conflict(`修正対象 ${file.path} は適用後に変更されています。安全のためロールバックを中止しました。`);
+      }
+    }
+    for (const file of files) {
+      writeFileSync(safeProjectFile(root, file.path), file.before_content, 'utf8');
+    }
+    this.#database.prepare("UPDATE change_sets SET state = 'reverted' WHERE id = ?").run(id);
+    const result = this.get(id);
+    this.activities.append({
+      kind: 'change.reverted', severity: 'warning', message: '適用済み修正案を、保存済みの適用前内容へロールバックしました。',
       metadata: { changeSetId: id, fixRequestId: request.id, fileCount: files.length },
     });
     return result;
@@ -157,6 +246,33 @@ export class ChangeService {
 
   #files(id: string): ChangeFileRow[] {
     return this.#database.prepare('SELECT * FROM change_set_files WHERE change_set_id = ? ORDER BY path').all(id) as unknown as ChangeFileRow[];
+  }
+
+  #ensureColumn(name: string, definition: string): void {
+    const columns = this.#database.prepare('PRAGMA table_info(change_sets)').all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === name)) {
+      this.#database.exec(`ALTER TABLE change_sets ADD COLUMN ${name} ${definition};`);
+    }
+  }
+}
+
+function copyProjectForAnalysis(root: string, stage: string): void {
+  cpSync(join(root, 'lib'), join(stage, 'lib'), { recursive: true, dereference: false });
+  // Asset declarations in pubspec.yaml are checked by `flutter analyze`.
+  // Keep the project's asset tree in the isolated validation copy so valid
+  // existing assets are not reported as proposal-induced warnings.
+  const assets = join(root, 'assets');
+  if (existsSync(assets)) {
+    cpSync(assets, join(stage, 'assets'), { recursive: true, dereference: false });
+  }
+  for (const file of ['pubspec.yaml', 'pubspec.lock', 'analysis_options.yaml']) {
+    const source = join(root, file);
+    if (existsSync(source)) copyFileSync(source, join(stage, file));
+  }
+  const packageConfig = join(root, '.dart_tool', 'package_config.json');
+  if (existsSync(packageConfig)) {
+    mkdirSync(join(stage, '.dart_tool'), { recursive: true });
+    copyFileSync(packageConfig, join(stage, '.dart_tool', 'package_config.json'));
   }
 }
 
@@ -200,6 +316,9 @@ function validateProposal(proposed: readonly CodexContextFile[], sourceFiles: re
     const source = byPath.get(path);
     if (!source || !path.startsWith('lib/') || !path.endsWith('.dart') || seen.has(path)) {
       throw rejected('Codex が許可されていないファイルを変更しようとしました。');
+    }
+    if (candidate.content.includes('\uFFFD') || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(candidate.content)) {
+      throw rejected('修正案に文字化けまたは許可されない制御文字が含まれています。');
     }
     seen.add(path);
     const counts = lineChanges(source.content, candidate.content);
@@ -248,5 +367,10 @@ function toChangeSet(row: ChangeSetRow, files: readonly ChangeFileRow[]): Change
   let risks: string[] = [];
   try { risks = JSON.parse(row.risks_json) as string[]; } catch { risks = []; }
   const mapped: ProposedFileChange[] = files.map((file) => ({ path: file.path, beforeSha256: file.before_sha256, afterSha256: file.after_sha256, additions: file.additions, deletions: file.deletions }));
-  return { id: row.id, fixRequestId: row.fix_request_id, state: row.state, summary: row.summary, risks, files: mapped, createdAt: row.created_at, ...(row.applied_at ? { appliedAt: row.applied_at } : {}) };
+  const validation: ChangeValidation = {
+    state: row.validation_state ?? 'not_run',
+    ...(row.validated_at ? { checkedAt: row.validated_at } : {}),
+    ...(row.validation_detail ? { detail: row.validation_detail } : {}),
+  };
+  return { id: row.id, fixRequestId: row.fix_request_id, state: row.state, summary: row.summary, risks, files: mapped, validation, createdAt: row.created_at, ...(row.applied_at ? { appliedAt: row.applied_at } : {}) };
 }

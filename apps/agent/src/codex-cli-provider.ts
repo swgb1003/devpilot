@@ -60,6 +60,7 @@ export class CodexCliProvider {
         'Read context.json in the current directory. Return only JSON following the supplied schema.',
         'Propose a minimal fix for the Japanese user instruction and the normalized screen annotation.',
         'Only return complete replacement content for existing paths listed in context.json.',
+        'Preserve every unrelated byte of each file, especially Japanese text and comments; output valid UTF-8 only.',
         'Never add files, never change pubspec/native/build/git files, and do not use tools to write files.',
         'Explain uncertainty briefly in risks. Do not include Markdown fences.',
       ].join(' ');
@@ -70,8 +71,8 @@ export class CodexCliProvider {
           '-C', workingDirectory, '--output-schema', schemaPath,
           '--output-last-message', outputPath, prompt,
         ],
-        180_000,
-        { cwd: workingDirectory },
+        120_000,
+        { cwd: workingDirectory, environment: codexEnvironment() },
       );
       if (result.timedOut || result.exitCode !== 0 || !existsSync(outputPath)) {
         throw unavailable(result.timedOut ? 'Codex の応答がタイムアウトしました。' : compactDiagnostic(result));
@@ -85,6 +86,27 @@ export class CodexCliProvider {
       rmSync(workingDirectory, { recursive: true, force: true, maxRetries: 2 });
     }
   }
+}
+
+function codexEnvironment(): NodeJS.ProcessEnv {
+  const home = homedir();
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    // Codex CLI installed by the VS Code extension relies on HOME to locate
+    // the existing ChatGPT login. Node/tsx sessions on Windows may omit it.
+    HOME: home,
+    USERPROFILE: home,
+    // Match the authenticated environment that succeeds when the user runs
+    // Codex directly. A partial temporary copy of this directory can make a
+    // valid ChatGPT login fail in the Agent process.
+    CODEX_HOME: join(home, '.codex'),
+  };
+  // DevPilot may itself be launched from a Codex-managed terminal. This flag
+  // is correct for the parent sandbox but must not disable the user's opted-in
+  // Codex CLI network connection.
+  delete environment.CODEX_SANDBOX_NETWORK_DISABLED;
+  delete environment.CODEX_CI;
+  return environment;
 }
 
 function resolveCodexExecutable(): string {

@@ -37,6 +37,7 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
     WidgetsBinding.instance.addObserver(this);
     FloatingControl.setSelectionHandler(_createFixFromOverlay);
     _refresh();
+    _restoreLatestChangeSet();
     _readOverlayStatus();
   }
 
@@ -188,7 +189,9 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
       final proposal = await _repository.generateChangeProposal(request.id);
       if (mounted) setState(() => _changeSet = proposal);
     } on PairingException catch (error) {
-      if (mounted) setState(() => _fixError = error.message);
+      if (!await _restoreLatestChangeSet() && mounted) {
+        setState(() => _fixError = error.message);
+      }
     } finally {
       if (mounted) setState(() => _submittingFix = false);
     }
@@ -217,9 +220,44 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
       final applied = await _repository.applyChangeSet(proposal.id);
       if (mounted) setState(() => _changeSet = applied);
     } on PairingException catch (error) {
-      if (mounted) setState(() => _fixError = error.message);
+      if (!await _restoreLatestChangeSet() && mounted) {
+        setState(() => _fixError = error.message);
+      }
     } finally {
       if (mounted) setState(() => _submittingFix = false);
+    }
+  }
+
+  Future<void> _validateProposal() async {
+    final proposal = _changeSet;
+    if (proposal == null || proposal.state != 'proposed' || _submittingFix) return;
+    setState(() {
+      _submittingFix = true;
+      _fixError = null;
+    });
+    try {
+      final checked = await _repository.validateChangeSet(proposal.id);
+      if (mounted) setState(() => _changeSet = checked);
+    } on PairingException catch (error) {
+      if (!await _restoreLatestChangeSet() && mounted) {
+        setState(() => _fixError = error.message);
+      }
+    } finally {
+      if (mounted) setState(() => _submittingFix = false);
+    }
+  }
+
+  Future<bool> _restoreLatestChangeSet() async {
+    try {
+      final restored = await _repository.restoreLatestChangeSet();
+      if (restored == null || !mounted) return restored != null;
+      setState(() {
+        _changeSet = restored;
+        _fixError = null;
+      });
+      return true;
+    } on PairingException {
+      return false;
     }
   }
 
@@ -421,7 +459,26 @@ class _LivePreviewScreenState extends State<LivePreviewScreen>
                           const SizedBox(height: 5),
                           Text('注意: ${changeSet.risks.join(' / ')}', style: const TextStyle(color: Color(0xFFFFD08A), fontSize: 11)),
                         ],
-                        if (changeSet.state == 'proposed') ...[
+                        if (changeSet.validationState == 'failed') ...[
+                          const SizedBox(height: 5),
+                          Text(
+                            '検証に失敗: ${changeSet.validationDetail ?? 'flutter analyze の詳細を確認してください。'}',
+                            maxLines: 4,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Color(0xFFFFA5AE), fontSize: 11),
+                          ),
+                        ],
+                        if (changeSet.state == 'proposed' && changeSet.validationState != 'passed') ...[
+                          const SizedBox(height: 8),
+                          FilledButton.icon(
+                            key: const ValueKey('change-set-validate'),
+                            onPressed: _submittingFix ? null : _validateProposal,
+                            icon: const Icon(Icons.rule_folder_rounded),
+                            label: Text(_submittingFix ? '解析して検証中…' : '解析して検証'),
+                            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF3183FF), minimumSize: const Size.fromHeight(42)),
+                          ),
+                        ],
+                        if (changeSet.state == 'proposed' && changeSet.validationState == 'passed') ...[
                           const SizedBox(height: 8),
                           FilledButton.icon(
                             key: const ValueKey('change-set-apply'),

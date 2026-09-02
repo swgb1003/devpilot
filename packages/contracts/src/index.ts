@@ -87,6 +87,7 @@ export const activityKinds = [
   'fix_request.approved',
   'change.proposed',
   'change.applied',
+  'change.reverted',
   'job.updated',
   'user.note',
 ] as const;
@@ -285,7 +286,15 @@ export interface ProposedFileChange {
   readonly deletions: number;
 }
 
-export type ChangeSetState = 'proposed' | 'applied' | 'conflicted';
+export type ChangeSetState = 'proposed' | 'applied' | 'reverted' | 'conflicted';
+
+export type ChangeValidationState = 'not_run' | 'passed' | 'failed';
+
+export interface ChangeValidation {
+  readonly state: ChangeValidationState;
+  readonly checkedAt?: string;
+  readonly detail?: string;
+}
 
 export interface ChangeSet {
   readonly id: string;
@@ -294,6 +303,7 @@ export interface ChangeSet {
   readonly summary: string;
   readonly risks: readonly string[];
   readonly files: readonly ProposedFileChange[];
+  readonly validation: ChangeValidation;
   readonly createdAt: string;
   readonly appliedAt?: string;
 }

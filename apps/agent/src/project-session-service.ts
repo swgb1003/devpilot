@@ -122,6 +122,24 @@ export class ProjectSessionService {
     });
   }
 
+  async analyzeProject(rootPath: string): Promise<{ readonly passed: boolean; readonly detail: string; readonly issueCount: number | undefined }> {
+    const result = await runCommand(
+      flutterExecutable,
+      ['analyze'],
+      120_000,
+      { environment: flutterEnvironment, cwd: rootPath },
+    );
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n').replaceAll('\r', '').trim().slice(-6_000);
+    const issueMatch = /(?:^|\n)(\d+) issues? found\./m.exec(output);
+    return {
+      passed: result.exitCode === 0 && !result.timedOut,
+      issueCount: result.exitCode === 0 && !result.timedOut ? 0 : issueMatch ? Number.parseInt(issueMatch[1]!, 10) : undefined,
+      detail: result.timedOut
+        ? 'flutter analyze がタイムアウトしました。'
+        : output || (result.exitCode === 0 ? 'flutter analyze passed.' : `flutter analyze failed (code ${result.exitCode ?? 'unknown'}).`),
+    };
+  }
+
   async start(projectId: string, deviceId: string): Promise<DevSession> {
     const project = this.#project(projectId);
     const preflight = await this.preflight(projectId);
@@ -134,7 +152,7 @@ export class ProjectSessionService {
     const child = spawn(flutterExecutable, ['run', '-d', deviceId], {
       cwd: project.root_path,
       env: flutterEnvironment,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
       windowsHide: true,
     });
@@ -190,6 +208,34 @@ export class ProjectSessionService {
     this.#setState(sessionId, 'stopped', '開発セッションを終了しました。');
     this.#activities.append({ kind: 'session.stopped', message: '開発セッションを終了しました。', metadata: { sessionId } });
     return { ...toSession(current), state: 'stopped', endedAt: new Date().toISOString(), detail: '開発セッションを終了しました。' };
+  }
+
+  hotReload(sessionId: string): boolean {
+    const session = this.#session(sessionId);
+    const child = this.#processes.get(sessionId);
+    if (session.state !== 'running' || !child?.stdin?.writable) return false;
+    child.stdin.write('r\n');
+    this.#setState(sessionId, 'running', 'Flutter ホットリロードを要求しました。');
+    this.#activities.append({
+      kind: 'job.updated', severity: 'success', message: '実行中の Flutter 開発セッションへホットリロードを要求しました。',
+      metadata: { sessionId },
+    });
+    return true;
+  }
+
+  /**
+   * A FixRequest can outlive the Flutter process that created it.  When the
+   * user reconnects after an Agent restart, reload the newest live session for
+   * that project instead of incorrectly targeting the stale request session.
+   */
+  hotReloadProject(projectId: string): boolean {
+    const candidates = this.#database.prepare(
+      "SELECT id FROM sessions WHERE project_id = ? AND state = 'running' ORDER BY started_at DESC",
+    ).all(projectId) as Array<{ id: string }>;
+    for (const candidate of candidates) {
+      if (this.hotReload(candidate.id)) return true;
+    }
+    return false;
   }
 
   close(): void { for (const child of this.#processes.values()) child.kill(); this.#database.close(); }

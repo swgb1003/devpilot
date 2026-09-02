@@ -59,6 +59,7 @@ export async function runCommand(
     let stderr = '';
     let timedOut = false;
     let settled = false;
+    let forcedTermination: NodeJS.Timeout | undefined;
 
     const settle = (exitCode: number | null): void => {
       if (settled) {
@@ -67,6 +68,7 @@ export async function runCommand(
 
       settled = true;
       clearTimeout(timeout);
+      if (forcedTermination) clearTimeout(forcedTermination);
       resolve({
         executable,
         arguments: arguments_,
@@ -128,6 +130,9 @@ export async function runCommand(
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill();
+      // On Windows, a CLI may leave a descendant holding its stdio handles.
+      // Do not leave an API request pending forever after its time budget.
+      forcedTermination = setTimeout(() => settle(child.exitCode), 1_500);
     }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
@@ -161,6 +166,7 @@ export async function runBinaryCommand(
     let timedOut = false;
     let truncated = false;
     let settled = false;
+    let forcedTermination: NodeJS.Timeout | undefined;
 
     const settle = (exitCode: number | null): void => {
       if (settled) {
@@ -169,6 +175,7 @@ export async function runBinaryCommand(
 
       settled = true;
       clearTimeout(timeout);
+      if (forcedTermination) clearTimeout(forcedTermination);
       resolve({
         executable,
         arguments: arguments_,
@@ -232,6 +239,7 @@ export async function runBinaryCommand(
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill();
+      forcedTermination = setTimeout(() => settle(child.exitCode), 1_500);
     }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
