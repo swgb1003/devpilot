@@ -18,6 +18,8 @@ class OverlaySelection {
     required this.y,
     required this.instruction,
     required this.selectedAt,
+    this.width,
+    this.height,
   });
 
   final double x;
@@ -25,13 +27,29 @@ class OverlaySelection {
   final String instruction;
   final DateTime selectedAt;
 
-  factory OverlaySelection.fromMap(Map<Object?, Object?> value) =>
-      OverlaySelection(
-        x: (value['x'] as num).toDouble(),
-        y: (value['y'] as num).toDouble(),
-        instruction: value['instruction'] as String,
-        selectedAt: DateTime.fromMillisecondsSinceEpoch(value['selectedAt'] as int),
-      );
+  /// Width and height are present only for a drag-selected rectangle.
+  final double? width;
+  final double? height;
+
+  bool get isRectangle =>
+      width != null && height != null && width! > 0 && height! > 0;
+
+  factory OverlaySelection.fromMap(Map<Object?, Object?> value) {
+    final width = value['width'];
+    final height = value['height'];
+    final isRectangle =
+        value['kind'] == 'rectangle' && width is num && height is num;
+    return OverlaySelection(
+      x: (value['x'] as num).toDouble(),
+      y: (value['y'] as num).toDouble(),
+      instruction: value['instruction'] as String,
+      selectedAt: DateTime.fromMillisecondsSinceEpoch(
+        value['selectedAt'] as int,
+      ),
+      width: isRectangle ? width.toDouble() : null,
+      height: isRectangle ? height.toDouble() : null,
+    );
+  }
 }
 
 class FloatingControl {
@@ -41,8 +59,11 @@ class FloatingControl {
     Future<void> Function(OverlaySelection selection) handler,
   ) {
     _channel.setMethodCallHandler((call) async {
-      if (call.method == 'selection' && call.arguments is Map<Object?, Object?>) {
-        await handler(OverlaySelection.fromMap(call.arguments as Map<Object?, Object?>));
+      if (call.method == 'selection' &&
+          call.arguments is Map<Object?, Object?>) {
+        await handler(
+          OverlaySelection.fromMap(call.arguments as Map<Object?, Object?>),
+        );
       }
     });
   }

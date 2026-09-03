@@ -7,11 +7,17 @@ coverage/
 apps/mobile/.dart_tool/
 apps/mobile/build/
 apps/mobile/android/app/.cxx/
+apps/mobile/android/.gradle/
 
 # Generated Rust / Tauri output
 apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/target-*/
 apps/desktop/src-tauri/gen/
 
 # Local review and temporary files
 .doc-review/
 .tmp/
+
+# Vendored visual-reference material is not application source.
+awesome-ios-design-md/
+DevPilot_UI_12screens/

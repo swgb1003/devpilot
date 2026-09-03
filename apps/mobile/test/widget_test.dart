@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:ui' show Offset, Size;
 
 import 'package:devpilot_mobile/main.dart';
+import 'package:devpilot_mobile/overlay/floating_control.dart';
 import 'package:devpilot_mobile/pairing/pairing_repository.dart';
 import 'package:devpilot_mobile/ui/screen_navigator.dart';
 import 'package:flutter/foundation.dart';
@@ -110,5 +111,29 @@ void main() {
       () => PairingQrPayload.parse('{"scheme":"http"}'),
       throwsA(isA<PairingException>()),
     );
+  });
+
+  test('decodes point and rectangle selections from the Android overlay', () {
+    final point = OverlaySelection.fromMap({
+      'kind': 'point',
+      'x': 120.0,
+      'y': 300.0,
+      'instruction': 'ボタンの余白を直す',
+      'selectedAt': 1,
+    });
+    final rectangle = OverlaySelection.fromMap({
+      'kind': 'rectangle',
+      'x': 120.0,
+      'y': 300.0,
+      'width': 240.0,
+      'height': 80.0,
+      'instruction': 'このカード全体を整える',
+      'selectedAt': 2,
+    });
+
+    expect(point.isRectangle, isFalse);
+    expect(rectangle.isRectangle, isTrue);
+    expect(rectangle.width, 240);
+    expect(rectangle.height, 80);
   });
 }

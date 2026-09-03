@@ -6,6 +6,7 @@ import type { AdapterId, ScreenshotArtifact } from '@devpilot/contracts';
 import { ActivityStore } from './activity-store.js';
 import { runBinaryCommand } from './command.js';
 import { AgentError } from './errors.js';
+import { FlutterMcpStdioScreenshotClient } from './flutter-mcp-client.js';
 import { ProjectSessionService } from './project-session-service.js';
 
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -18,7 +19,7 @@ interface CapturedPng {
   readonly height: number;
 }
 
-/** The minimal boundary needed to connect the Flutter MCP transport. */
+/** Boundary for the Flutter MCP transport, retained for deterministic tests. */
 export interface FlutterMcpScreenshotClient {
   captureScreenshot(deviceId: string): Promise<Buffer | undefined>;
 }
@@ -102,7 +103,10 @@ class AdbScreenshotAdapter implements ScreenshotAdapter {
       10_000,
     );
     if (result.timedOut) {
-      throw invalidScreenshot('スクリーンショットの取得がタイムアウトしました。端末の接続を確認して再試行してください。', true);
+      throw invalidScreenshot(
+        'スクリーンショットの取得がタイムアウトしました。端末の接続を確認して再試行してください。',
+        true,
+      );
     }
     if (result.truncated || result.exitCode !== 0) {
       const detail = result.stderr.trim().replaceAll(/\s+/g, ' ').slice(0, 180);
@@ -171,9 +175,8 @@ export class ScreenshotArtifactStore {
 }
 
 /**
- * Product-facing controller.  Flutter MCP can be added as a preferred adapter
- * later without changing the route or mobile contract; M5 uses ADB as the
- * verified fallback for the screenshot capability.
+ * Product-facing controller. Flutter MCP is preferred whenever a Driver-enabled
+ * debug app is discoverable; ADB remains an independent verified fallback.
  */
 export class DeviceController {
   readonly #adb = new AdbScreenshotAdapter();
@@ -184,7 +187,9 @@ export class DeviceController {
     private readonly activities: ActivityStore,
     flutterMcp?: FlutterMcpScreenshotClient,
   ) {
-    this.#mcp = new FlutterMcpScreenshotAdapter(flutterMcp);
+    this.#mcp = new FlutterMcpScreenshotAdapter(
+      flutterMcp ?? new FlutterMcpStdioScreenshotClient(),
+    );
   }
 
   readonly #mcp: FlutterMcpScreenshotAdapter;
@@ -194,7 +199,8 @@ export class DeviceController {
     if (!session || session.state !== 'running') {
       throw new AgentError({
         code: 'REQUEST_INVALID',
-        message: '実行中のFlutter開発セッションがありません。PCで開発セッションを開始してから再試行してください。',
+        message:
+          '実行中のFlutter開発セッションがありません。PCで開発セッションを開始してから再試行してください。',
         status: 409,
         action: 'CHECK_REQUEST',
       });
@@ -202,16 +208,16 @@ export class DeviceController {
     if (expectedSessionId && expectedSessionId !== session.id) {
       throw new AgentError({
         code: 'REQUEST_INVALID',
-        message: '指定された開発セッションは現在実行中ではありません。画面を更新してから再試行してください。',
+        message:
+          '指定された開発セッションは現在実行中ではありません。画面を更新してから再試行してください。',
         status: 409,
         action: 'CHECK_REQUEST',
       });
     }
-    // Prefer Flutter MCP when a transport is registered; in the M5 desktop
-    // slice no MCP transport is available yet, so verified ADB is selected.
+    // A failed discovery or an invalid MCP image returns undefined, preserving
+    // the verified ADB fallback rather than exposing unvalidated bytes.
     const capture =
-      (await this.#mcp.capture(session.deviceId)) ??
-      (await this.#adb.capture(session.deviceId));
+      (await this.#mcp.capture(session.deviceId)) ?? (await this.#adb.capture(session.deviceId));
     const artifact = this.artifacts.save({
       sessionId: session.id,
       deviceId: session.deviceId,

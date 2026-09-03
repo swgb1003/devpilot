@@ -30,6 +30,7 @@ pub fn run() {
             agent_supervisor::agent_start,
             agent_supervisor::agent_status,
             agent_supervisor::agent_stop,
+            agent_supervisor::agent_desktop_token,
             select_flutter_project_folder
         ])
         .run(tauri::generate_context!())

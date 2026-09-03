@@ -3,6 +3,7 @@ import 'dart:ui' show ImageFilter;
 import 'package:devpilot_mobile/pairing/pairing_screen.dart';
 import 'package:devpilot_mobile/pairing/project_select_screen.dart';
 import 'package:devpilot_mobile/preview/live_preview_screen.dart';
+import 'package:devpilot_mobile/history/activity_history_screen.dart';
 import 'package:flutter/material.dart';
 
 const _designWidth = 941.0;
@@ -568,6 +569,9 @@ class _DevPilotScreenNavigatorState extends State<DevPilotScreenNavigator> {
       return LivePreviewScreen(
         onBack: _goBack,
       );
+    }
+    if (_current == DevPilotScreen.history) {
+      return ActivityHistoryScreen(onBack: _goBack);
     }
     final spec = _screenSpecs[_current]!;
     return PopScope(

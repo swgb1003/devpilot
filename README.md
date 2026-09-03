@@ -2,7 +2,7 @@
 
 DevPilot turns an Android device running a development Flutter app into a safe remote control for an AI-assisted edit, validation, and Hot Reload loop.
 
-This repository is currently at **M3: Pairing slice**. Product behavior is defined by `docs/DevPilot_開発仕様書_v1.0.docx`; M3 adds real QR pairing, a Mobile camera scanner, Desktop approval, certificate-fingerprint pinning, Android Keystore token storage, reconnect, and unpair. Project registration and edit/test execution remain later milestones.
+This repository is in **v0.1 MVP hardening**. Product behavior is defined by `docs/DevPilot_開発仕様書_v1.0.docx`. M3 pairing and the M4-M8 implementation slices (project/session, screenshot, Point & Fix, Codex change proposals, validation, apply, and Hot Reload requests) are present; the v0.1 release criteria are not yet complete.
 
 ## Workspace
 
@@ -49,17 +49,27 @@ flutter pub get
 
 ## Run
 
+Choose one Desktop development mode:
+
 ```powershell
-# Agent health endpoint: http://127.0.0.1:47831/health
+# Browser shell: run the Agent and browser in separate terminals with the same token.
+# Terminal A
+$env:DEVPILOT_DESKTOP_TOKEN='replace-with-a-random-token-at-least-32-characters'
 pnpm dev:agent
 
-# React shell in a browser
+# Terminal B (use the exact same value)
+$env:VITE_DEVPILOT_DESKTOP_TOKEN='replace-with-the-same-token'
 pnpm dev:desktop:web
 
-# Native Tauri shell
+# Native Tauri shell: do NOT run pnpm dev:agent separately.
+# Start DevPilot Desktop, then use its "Start Agent" button; it creates and
+# passes a fresh private token to its own Agent sidecar.
 pnpm dev:desktop
+```
 
-# Android app
+```powershell
+
+# Android app (either Desktop mode)
 Set-Location apps/mobile
 flutter run -d <deviceId>
 
@@ -91,7 +101,7 @@ The pairing QR is valid for 120 seconds and one successful confirmation. Five in
 
 ## M2 Agent API
 
-The Agent binds only to `127.0.0.1`. Product routes require a Desktop bearer token of at least 32 characters:
+The Agent binds only to `127.0.0.1`. Every Desktop control route under `/api/v1/` requires a Desktop bearer token of at least 32 characters. The native Tauri shell generates a fresh token for its sidecar; browser development mode must set `VITE_DEVPILOT_DESKTOP_TOKEN` to the same value as `DEVPILOT_DESKTOP_TOKEN`.
 
 ```powershell
 $env:DEVPILOT_DESKTOP_TOKEN='replace-with-a-random-token-at-least-32-characters'
@@ -120,4 +130,4 @@ The Desktop M1 screen displays the same result. A physical authorized Android de
 
 ## Milestone boundary
 
-M2 provides the safe local foundation and a visually complete, interactive Mobile prototype. Pairing credentials, QR scanning, project registration, provider execution, Hot Reload, Point & Fix, and test recording are deliberately not presented as live capabilities until their milestone implementations are complete.
+The current implementation has moved beyond the original M2/M3 prototype boundary. M3 pairing, M4 project/session control, and in-progress M5-M8 preview and change-flow slices are available for development validation. Live Preview now prefers a short-lived Flutter MCP/DTD/Driver screenshot session and falls back to validated ADB capture when no Driver-enabled app is discoverable. They are not a v0.1 release claim: durable job/recovery behavior, end-to-end tests, packaging, and the remaining security and performance gates are still required. Test recording remains a later milestone.

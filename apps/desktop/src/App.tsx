@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 
@@ -57,20 +57,75 @@ interface PairingState {
   readonly expiresAt: string;
   readonly device?: { readonly displayName: string; readonly publicKey: string };
 }
-interface RegisteredProject { readonly id: string; readonly name: string; readonly rootPath: string; readonly status: string }
-interface AndroidDevice { readonly id: string; readonly name: string; readonly isAuthorized: boolean }
-interface DevSession { readonly id: string; readonly projectId: string; readonly deviceId: string; readonly state: string; readonly detail?: string }
+interface RegisteredProject {
+  readonly id: string;
+  readonly name: string;
+  readonly rootPath: string;
+  readonly status: string;
+}
+interface AndroidDevice {
+  readonly id: string;
+  readonly name: string;
+  readonly isAuthorized: boolean;
+}
+interface DevSession {
+  readonly id: string;
+  readonly projectId: string;
+  readonly deviceId: string;
+  readonly state: string;
+  readonly detail?: string;
+}
 interface AgentDiagnostics {
   readonly agent: { readonly status: string; readonly version: string };
   readonly session: DevSession | null;
-  readonly devices: { readonly detected: number; readonly authorized: number; readonly names: readonly string[] };
-  readonly recovery: { readonly action: 'none' | 'wait' | 'open_session' | 'restart_session'; readonly title: string; readonly message: string };
+  readonly devices: {
+    readonly detected: number;
+    readonly authorized: number;
+    readonly names: readonly string[];
+  };
+  readonly recovery: {
+    readonly action: 'none' | 'wait' | 'open_session' | 'restart_session';
+    readonly title: string;
+    readonly message: string;
+  };
 }
 
 const agentEndpoint = 'http://127.0.0.1:47831';
+let nativeDesktopToken: Promise<string> | undefined;
 
 function isTauriRuntime(): boolean {
-  return '__TAURI_INTERNALS__' in window;
+  return isTauri();
+}
+
+async function desktopToken(): Promise<string> {
+  if (isTauriRuntime()) {
+    nativeDesktopToken ??= invoke<string>('agent_desktop_token');
+    return nativeDesktopToken;
+  }
+
+  const token = import.meta.env.VITE_DEVPILOT_DESKTOP_TOKEN;
+  if (!token || token.length < 32) {
+    throw new Error(
+      'ブラウザ開発モードでは VITE_DEVPILOT_DESKTOP_TOKEN に32文字以上のAgentトークンを設定してください。',
+    );
+  }
+  return token;
+}
+
+async function agentFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('authorization', `Bearer ${await desktopToken()}`);
+  return fetch(`${agentEndpoint}${path}`, { ...init, headers });
+}
+
+function errorMessage(caught: unknown, fallback: string): string {
+  if (caught instanceof Error) return caught.message;
+  if (typeof caught === 'string' && caught.trim()) return caught;
+  return fallback;
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 function statusLabel(status: ProbeStatus): string {
@@ -82,6 +137,7 @@ function statusLabel(status: ProbeStatus): string {
 }
 
 export function App() {
+  const nativeDesktop = isTauriRuntime();
   const [agentStatus, setAgentStatus] = useState<AgentStatus | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [isLoading, setIsLoading] = useState(false);
@@ -101,57 +157,78 @@ export function App() {
   const [diagnostics, setDiagnostics] = useState<AgentDiagnostics | undefined>();
   const [diagnosticsError, setDiagnosticsError] = useState<string | undefined>();
   const [isCheckingDiagnostics, setIsCheckingDiagnostics] = useState(false);
+  const [agentBootstrapped, setAgentBootstrapped] = useState(() => !isTauriRuntime());
 
   const refreshM4 = useCallback(async () => {
+    if (isTauriRuntime() && !agentBootstrapped) return;
     try {
       const [projectsResponse, devicesResponse, sessionResponse] = await Promise.all([
-        fetch(`${agentEndpoint}/api/v1/projects`), fetch(`${agentEndpoint}/api/v1/devices`), fetch(`${agentEndpoint}/api/v1/session`),
+        agentFetch('/api/v1/projects'),
+        agentFetch('/api/v1/devices'),
+        agentFetch('/api/v1/session'),
       ]);
-      if (!projectsResponse.ok || !devicesResponse.ok || !sessionResponse.ok) throw new Error('AgentのM4 APIへ接続できません。');
+      if (!projectsResponse.ok || !devicesResponse.ok || !sessionResponse.ok)
+        throw new Error('AgentのM4 APIへ接続できません。');
       const projectData = (await projectsResponse.json()) as { data: RegisteredProject[] };
       const deviceData = (await devicesResponse.json()) as { data: AndroidDevice[] };
       const sessionData = (await sessionResponse.json()) as { data: DevSession | null };
-      setProjects(projectData.data); setDevices(deviceData.data); setSession(sessionData.data ?? undefined);
+      setProjects(projectData.data);
+      setDevices(deviceData.data);
+      setSession(sessionData.data ?? undefined);
       setSelectedProjectId((current) => current || projectData.data[0]?.id || '');
-    } catch (caught) { setM4Error(caught instanceof Error ? caught.message : 'M4の状態を取得できません。'); }
-  }, []);
+    } catch (caught) {
+      setM4Error(caught instanceof Error ? caught.message : 'M4の状態を取得できません。');
+    }
+  }, [agentBootstrapped]);
 
-  useEffect(() => { void refreshM4(); }, [refreshM4]);
+  useEffect(() => {
+    void refreshM4();
+  }, [refreshM4]);
   const refreshDiagnostics = useCallback(async () => {
+    if (isTauriRuntime() && !agentBootstrapped) return;
     setIsCheckingDiagnostics(true);
     setDiagnosticsError(undefined);
     try {
-      const response = await fetch(`${agentEndpoint}/api/v1/diagnostics`);
-      if (!response.ok) throw new Error(`診断情報を取得できませんでした (HTTP ${response.status})。`);
+      const response = await agentFetch('/api/v1/diagnostics');
+      if (!response.ok)
+        throw new Error(`診断情報を取得できませんでした (HTTP ${response.status})。`);
       const body = (await response.json()) as { data: AgentDiagnostics };
       setDiagnostics(body.data);
     } catch (caught) {
       setDiagnostics(undefined);
-      setDiagnosticsError(caught instanceof Error ? caught.message : '診断情報を取得できませんでした。');
+      setDiagnosticsError(
+        caught instanceof Error ? caught.message : '診断情報を取得できませんでした。',
+      );
     } finally {
       setIsCheckingDiagnostics(false);
     }
-  }, []);
-  useEffect(() => { void refreshDiagnostics(); }, [refreshDiagnostics]);
+  }, [agentBootstrapped]);
+  useEffect(() => {
+    void refreshDiagnostics();
+  }, [refreshDiagnostics]);
   const refreshSession = useCallback(async () => {
+    if (isTauriRuntime() && !agentBootstrapped) return;
     try {
-      const response = await fetch(`${agentEndpoint}/api/v1/session`);
+      const response = await agentFetch('/api/v1/session');
       if (!response.ok) throw new Error('Agentのセッション状態を取得できません。');
       const body = (await response.json()) as { data: DevSession | null };
       setSession(body.data ?? undefined);
     } catch (caught) {
       setM4Error(caught instanceof Error ? caught.message : 'セッション状態を取得できません。');
     }
-  }, []);
+  }, [agentBootstrapped]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => { void refreshSession(); }, 2000);
+    const timer = window.setInterval(() => {
+      void refreshSession();
+    }, 2000);
     return () => window.clearInterval(timer);
   }, [refreshSession]);
 
   const refreshDevices = useCallback(async () => {
+    if (isTauriRuntime() && !agentBootstrapped) return;
     try {
-      const response = await fetch(`${agentEndpoint}/api/v1/devices`);
+      const response = await agentFetch('/api/v1/devices');
       if (!response.ok) throw new Error('Android端末の状態を取得できません。');
       const body = (await response.json()) as { data: AndroidDevice[] };
       setDevices(body.data);
@@ -159,27 +236,77 @@ export function App() {
     } catch (caught) {
       setM4Error(caught instanceof Error ? caught.message : 'Android端末の状態を取得できません。');
     }
-  }, []);
+  }, [agentBootstrapped]);
 
   useEffect(() => {
     if (devices.some((device) => device.isAuthorized)) return undefined;
     void refreshDevices();
-    const timer = window.setInterval(() => { void refreshDevices(); }, 5000);
+    const timer = window.setInterval(() => {
+      void refreshDevices();
+    }, 5000);
     return () => window.clearInterval(timer);
   }, [devices, refreshDevices]);
 
   const registerProject = useCallback(async () => {
+    if (nativeDesktop && !agentBootstrapped) {
+      setM4Error('Agent を起動してからプロジェクトを登録してください。');
+      return;
+    }
     setM4Error(undefined);
-    try { const response = await fetch(`${agentEndpoint}/api/v1/projects`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rootPath: projectPath }) }); if (!response.ok) throw new Error(((await response.json()) as { error?: { message?: string } }).error?.message ?? 'プロジェクトを登録できません。'); setProjectPath(''); await refreshM4(); } catch (caught) { setM4Error(caught instanceof Error ? caught.message : 'プロジェクトを登録できません。'); }
-  }, [projectPath, refreshM4]);
+    try {
+      const response = await agentFetch('/api/v1/projects', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rootPath: projectPath }),
+      });
+      if (!response.ok)
+        throw new Error(
+          ((await response.json()) as { error?: { message?: string } }).error?.message ??
+            'プロジェクトを登録できません。',
+        );
+      setProjectPath('');
+      await refreshM4();
+    } catch (caught) {
+      setM4Error(caught instanceof Error ? caught.message : 'プロジェクトを登録できません。');
+    }
+  }, [agentBootstrapped, nativeDesktop, projectPath, refreshM4]);
   const startSession = useCallback(async () => {
-    const device = devices.find((item) => item.isAuthorized); if (!selectedProjectId || !device) { setM4Error('Flutterプロジェクトとauthorized Android端末を選択してください。'); return; }
-    setM4Error(undefined); try { const response = await fetch(`${agentEndpoint}/api/v1/sessions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectId: selectedProjectId, deviceId: device.id }) }); if (!response.ok) throw new Error(((await response.json()) as { error?: { message?: string } }).error?.message ?? 'セッションを開始できません。'); await refreshM4(); } catch (caught) { setM4Error(caught instanceof Error ? caught.message : 'セッションを開始できません。'); }
-  }, [devices, selectedProjectId, refreshM4]);
-  const stopSession = useCallback(async () => { if (!session) return; await fetch(`${agentEndpoint}/api/v1/sessions/${session.id}/stop`, { method: 'POST' }); await refreshM4(); }, [session, refreshM4]);
+    if (nativeDesktop && !agentBootstrapped) {
+      setM4Error('Agent を起動してから開発セッションを開始してください。');
+      return;
+    }
+    const device = devices.find((item) => item.isAuthorized);
+    if (!selectedProjectId || !device) {
+      setM4Error('Flutterプロジェクトとauthorized Android端末を選択してください。');
+      return;
+    }
+    setM4Error(undefined);
+    try {
+      const response = await agentFetch('/api/v1/sessions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId: selectedProjectId, deviceId: device.id }),
+      });
+      if (!response.ok)
+        throw new Error(
+          ((await response.json()) as { error?: { message?: string } }).error?.message ??
+            'セッションを開始できません。',
+        );
+      await refreshM4();
+    } catch (caught) {
+      setM4Error(caught instanceof Error ? caught.message : 'セッションを開始できません。');
+    }
+  }, [agentBootstrapped, devices, nativeDesktop, selectedProjectId, refreshM4]);
+  const stopSession = useCallback(async () => {
+    if (!session) return;
+    await agentFetch(`/api/v1/sessions/${session.id}/stop`, { method: 'POST' });
+    await refreshM4();
+  }, [session, refreshM4]);
   const chooseProjectFolder = useCallback(async () => {
     if (!isTauriRuntime()) {
-      setM4Error('フォルダ選択はDevPilot Desktopアプリで利用できます。ブラウザ表示ではパスを貼り付けてください。');
+      setM4Error(
+        'フォルダ選択はDevPilot Desktopアプリで利用できます。ブラウザ表示ではパスを貼り付けてください。',
+      );
       return;
     }
     try {
@@ -220,17 +347,51 @@ export function App() {
     }
   }, []);
 
+  const waitForAgentReady = useCallback(async () => {
+    const deadline = Date.now() + 12_000;
+    let lastError: unknown;
+    while (Date.now() < deadline) {
+      try {
+        const response = await agentFetch('/health');
+        if (response.ok) return;
+        lastError = new Error(`Agent responded with HTTP ${response.status}.`);
+      } catch (caught) {
+        lastError = caught;
+      }
+      await wait(250);
+    }
+    throw new Error(
+      `Agent started but did not become ready within 12 seconds. ${errorMessage(lastError, '')}`.trim(),
+    );
+  }, []);
+
+  const startSidecar = useCallback(async (): Promise<void> => {
+    try {
+      setError(undefined);
+      setM4Error(undefined);
+      setAgentStatus(await invoke<AgentStatus>('agent_start'));
+      await waitForAgentReady();
+      setAgentBootstrapped(true);
+      await Promise.all([refreshReport(), refreshM4(), refreshDiagnostics()]);
+    } catch (caughtError) {
+      setAgentBootstrapped(false);
+      const message = errorMessage(caughtError, 'Unable to start the Agent sidecar.');
+      setError(message);
+      setM4Error(message);
+    }
+  }, [refreshDiagnostics, refreshM4, refreshReport, waitForAgentReady]);
+
   const refreshSidecarStatus = useCallback(async () => {
     if (!isTauriRuntime()) {
       return;
     }
 
     try {
-      setAgentStatus(await invoke<AgentStatus>('agent_status'));
+      const status = await invoke<AgentStatus>('agent_status');
+      setAgentStatus(status);
+      if (status.state === 'stopped') setAgentBootstrapped(false);
     } catch (caughtError) {
-      setError(
-        caughtError instanceof Error ? caughtError.message : 'Unable to inspect the Agent sidecar.',
-      );
+      setError(errorMessage(caughtError, 'Unable to inspect the Agent sidecar.'));
     }
   }, []);
 
@@ -239,8 +400,13 @@ export function App() {
     void refreshSidecarStatus();
   }, [refreshReport, refreshSidecarStatus]);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    void startSidecar();
+  }, [startSidecar]);
+
   const refreshPairing = useCallback(async (pairingId: string) => {
-    const response = await fetch(`${agentEndpoint}/api/v1/pairings/${pairingId}`);
+    const response = await agentFetch(`/api/v1/pairings/${pairingId}`);
     if (!response.ok) {
       throw new Error(`Pairing status request failed with HTTP ${response.status}.`);
     }
@@ -267,7 +433,7 @@ export function App() {
     setIsPairingLoading(true);
     setPairingError(undefined);
     try {
-      const response = await fetch(`${agentEndpoint}/api/v1/pairings`, { method: 'POST' });
+      const response = await agentFetch('/api/v1/pairings', { method: 'POST' });
       if (!response.ok) {
         const body = (await response.json()) as { error?: { message?: string } };
         throw new Error(
@@ -303,7 +469,7 @@ export function App() {
     setIsPairingLoading(true);
     setPairingError(undefined);
     try {
-      const response = await fetch(`${agentEndpoint}/api/v1/pairings/${pairing.id}/approve`, {
+      const response = await agentFetch(`/api/v1/pairings/${pairing.id}/approve`, {
         method: 'POST',
       });
       if (!response.ok) {
@@ -319,20 +485,10 @@ export function App() {
     }
   }, [pairing, refreshPairing]);
 
-  async function startSidecar(): Promise<void> {
-    try {
-      setAgentStatus(await invoke<AgentStatus>('agent_start'));
-      await refreshReport();
-    } catch (caughtError) {
-      setError(
-        caughtError instanceof Error ? caughtError.message : 'Unable to start the Agent sidecar.',
-      );
-    }
-  }
-
   async function stopSidecar(): Promise<void> {
     try {
       setAgentStatus(await invoke<AgentStatus>('agent_stop'));
+      setAgentBootstrapped(false);
       setReport(undefined);
     } catch (caughtError) {
       setError(
@@ -340,8 +496,6 @@ export function App() {
       );
     }
   }
-
-  const nativeDesktop = isTauriRuntime();
 
   return (
     <main className="shell">
@@ -357,18 +511,112 @@ export function App() {
       </section>
 
       <section className="status-card pairing-card" aria-labelledby="m4-title">
-        <div className="status-heading"><div><p className="eyebrow">M4 Project / Session</p><h2 id="m4-title">Flutter開発セッション</h2></div><span className={`status-pill ${session?.state === 'running' ? 'is-ready' : ''}`}>{session?.state ?? 'Ready to set up'}</span></div>
-        <div className="pairing-content"><div className="pairing-copy">
-          <p>Flutterアプリフォルダ（中に <code>pubspec.yaml</code> があるフォルダ）を登録し、検出済みのAndroid実機でAgent管理の <code>flutter run</code> を開始します。</p>
-          <input className="project-path-input" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="Flutterアプリフォルダのパスを貼り付け 例: C:\\work\\my_flutter_app" />
-          <button className="quiet-button" type="button" onClick={() => void chooseProjectFolder()}>アプリフォルダを選択</button>
-          <button className="quiet-button" type="button" onClick={() => void navigator.clipboard.readText().then(setProjectPath).catch(() => setM4Error('クリップボードを読み取れませんでした。パスを入力欄へ貼り付けてください。'))}>クリップボードから貼り付け</button>
-          <button className="quiet-button" type="button" disabled={!projectPath} onClick={() => void registerProject()}>プロジェクトを登録</button>
-          <select className="project-path-input" value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}><option value="">プロジェクトを選択</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name} — {project.rootPath}</option>)}</select>
-          <p className="muted">Android: {devices.filter((device) => device.isAuthorized).map((device) => device.name).join(', ') || '検出されていません'}</p>
-          {session?.state === 'starting' || session?.state === 'running' ? <button className="primary-button" type="button" onClick={() => void stopSession()}>開発セッションを終了</button> : <button className="primary-button" type="button" onClick={() => void startSession()}>Open Dev Session</button>}
-          {session?.detail ? <p className="muted">{session.detail}</p> : null}{m4Error ? <p className="pairing-error">{m4Error}</p> : null}
-        </div><div className="pairing-qr-placeholder" aria-hidden="true">M4</div></div>
+        <div className="status-heading">
+          <div>
+            <p className="eyebrow">M4 Project / Session</p>
+            <h2 id="m4-title">Flutter開発セッション</h2>
+          </div>
+          <span className={`status-pill ${session?.state === 'running' ? 'is-ready' : ''}`}>
+            {session?.state ?? 'Ready to set up'}
+          </span>
+        </div>
+        <div className="pairing-content">
+          <div className="pairing-copy">
+            <p>
+              Flutterアプリフォルダ（中に <code>pubspec.yaml</code>{' '}
+              があるフォルダ）を登録し、検出済みのAndroid実機でAgent管理の <code>flutter run</code>{' '}
+              を開始します。
+            </p>
+            <input
+              className="project-path-input"
+              value={projectPath}
+              onChange={(event) => setProjectPath(event.target.value)}
+              placeholder="Flutterアプリフォルダのパスを貼り付け 例: C:\\work\\my_flutter_app"
+            />
+            <button
+              className="quiet-button"
+              type="button"
+              onClick={() => void chooseProjectFolder()}
+            >
+              アプリフォルダを選択
+            </button>
+            <button
+              className="quiet-button"
+              type="button"
+              onClick={() =>
+                void navigator.clipboard
+                  .readText()
+                  .then(setProjectPath)
+                  .catch(() =>
+                    setM4Error(
+                      'クリップボードを読み取れませんでした。パスを入力欄へ貼り付けてください。',
+                    ),
+                  )
+              }
+            >
+              クリップボードから貼り付け
+            </button>
+            <button
+              className="quiet-button"
+              type="button"
+              disabled={!projectPath || (nativeDesktop && !agentBootstrapped)}
+              onClick={() => void registerProject()}
+            >
+              プロジェクトを登録
+            </button>
+            <select
+              className="project-path-input"
+              value={selectedProjectId}
+              onChange={(event) => setSelectedProjectId(event.target.value)}
+            >
+              <option value="">プロジェクトを選択</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name} — {project.rootPath}
+                </option>
+              ))}
+            </select>
+            <p className="muted">
+              Android:{' '}
+              {devices
+                .filter((device) => device.isAuthorized)
+                .map((device) => device.name)
+                .join(', ') || '検出されていません'}
+            </p>
+            {session?.state === 'starting' || session?.state === 'running' ? (
+              <button className="primary-button" type="button" onClick={() => void stopSession()}>
+                開発セッションを終了
+              </button>
+            ) : (
+              <button
+                className="primary-button"
+                disabled={nativeDesktop && !agentBootstrapped}
+                type="button"
+                onClick={() => void startSession()}
+              >
+                Open Dev Session
+              </button>
+            )}
+            {session?.detail ? <p className="muted">{session.detail}</p> : null}
+            {m4Error ? (
+              <>
+                <p className="pairing-error">{m4Error}</p>
+                {nativeDesktop && !agentBootstrapped ? (
+                  <button
+                    className="quiet-button"
+                    type="button"
+                    onClick={() => void startSidecar()}
+                  >
+                    Agent を再試行
+                  </button>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+          <div className="pairing-qr-placeholder" aria-hidden="true">
+            M4
+          </div>
+        </div>
       </section>
 
       <section className="status-card diagnostics-card" aria-labelledby="diagnostics-title">
@@ -377,30 +625,65 @@ export function App() {
             <p className="eyebrow">M9 Recovery</p>
             <h2 id="diagnostics-title">診断・復旧</h2>
           </div>
-          <span className={`status-pill ${diagnostics?.recovery.action === 'none' ? 'is-ready' : ''}`}>
-            {diagnostics?.recovery.action === 'none' ? 'Ready' : diagnostics ? 'Action needed' : 'Checking'}
+          <span
+            className={`status-pill ${diagnostics?.recovery.action === 'none' ? 'is-ready' : ''}`}
+          >
+            {diagnostics?.recovery.action === 'none'
+              ? 'Ready'
+              : diagnostics
+                ? 'Action needed'
+                : 'Checking'}
           </span>
         </div>
         <div className="connection-content">
           {diagnostics ? (
             <>
-              <p><strong>{diagnostics.recovery.title}</strong></p>
+              <p>
+                <strong>{diagnostics.recovery.title}</strong>
+              </p>
               <p className="muted">{diagnostics.recovery.message}</p>
               <dl className="diagnostic-list">
-                <div><dt>Local Agent</dt><dd>ready · v{diagnostics.agent.version}</dd></div>
-                <div><dt>Android</dt><dd>{diagnostics.devices.authorized}/{diagnostics.devices.detected} authorized{diagnostics.devices.names.length ? ` · ${diagnostics.devices.names.join(', ')}` : ''}</dd></div>
-                <div><dt>Flutter session</dt><dd>{diagnostics.session?.state ?? 'not started'}{diagnostics.session?.detail ? ` · ${diagnostics.session.detail.split('\n')[0]}` : ''}</dd></div>
+                <div>
+                  <dt>Local Agent</dt>
+                  <dd>ready · v{diagnostics.agent.version}</dd>
+                </div>
+                <div>
+                  <dt>Android</dt>
+                  <dd>
+                    {diagnostics.devices.authorized}/{diagnostics.devices.detected} authorized
+                    {diagnostics.devices.names.length
+                      ? ` · ${diagnostics.devices.names.join(', ')}`
+                      : ''}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Flutter session</dt>
+                  <dd>
+                    {diagnostics.session?.state ?? 'not started'}
+                    {diagnostics.session?.detail
+                      ? ` · ${diagnostics.session.detail.split('\n')[0]}`
+                      : ''}
+                  </dd>
+                </div>
               </dl>
             </>
           ) : (
             <p className="pairing-error">{diagnosticsError ?? '診断情報を読み込んでいます。'}</p>
           )}
           <div className="action-row">
-            <button className="quiet-button" type="button" disabled={isCheckingDiagnostics} onClick={() => void refreshDiagnostics()}>
+            <button
+              className="quiet-button"
+              type="button"
+              disabled={isCheckingDiagnostics}
+              onClick={() => void refreshDiagnostics()}
+            >
               {isCheckingDiagnostics ? '確認中…' : '状態を再確認'}
             </button>
-            {diagnostics?.recovery.action === 'open_session' || diagnostics?.recovery.action === 'restart_session' ? (
-              <button className="primary-button" type="button" onClick={() => void startSession()}>Open Dev Session</button>
+            {diagnostics?.recovery.action === 'open_session' ||
+            diagnostics?.recovery.action === 'restart_session' ? (
+              <button className="primary-button" type="button" onClick={() => void startSession()}>
+                Open Dev Session
+              </button>
             ) : null}
           </div>
         </div>

@@ -57,6 +57,32 @@ test('M2 API requires Desktop bearer authentication', async (context) => {
   assert.ok(body.error.traceId.length > 0);
 });
 
+test('Desktop control routes reject tokenless loopback requests and unknown Origins', async (context) => {
+  const server = createAgentServer({ config: testConfig() });
+  context.after(() => server.close());
+  await listen(server, 0);
+  const address = server.address() as AddressInfo;
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  for (const [path, method] of [
+    ['/api/v1/projects', 'GET'],
+    ['/api/v1/diagnostics', 'GET'],
+    ['/api/v1/pairings', 'POST'],
+  ] as const) {
+    const response = await fetch(`${baseUrl}${path}`, { method });
+    const body = (await response.json()) as { error: { code: string } };
+    assert.equal(response.status, 401, `${method} ${path}`);
+    assert.equal(body.error.code, 'AUTH_REQUIRED');
+  }
+
+  const untrustedOrigin = await fetch(`${baseUrl}/api/v1/projects`, {
+    headers: { ...authorizationHeaders(), origin: 'https://untrusted.example' },
+  });
+  const untrustedBody = (await untrustedOrigin.json()) as { error: { code: string } };
+  assert.equal(untrustedOrigin.status, 403);
+  assert.equal(untrustedBody.error.code, 'AUTH_INVALID');
+});
+
 test('M2 Activity API persists and lists validated activities', async (context) => {
   const server = createAgentServer({ config: testConfig() });
   context.after(() => server.close());
@@ -161,7 +187,10 @@ test('M3 API requires Desktop approval before a mobile receives its secure token
   const address = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
-  const created = await fetch(`${baseUrl}/api/v1/pairings`, { method: 'POST' });
+  const created = await fetch(`${baseUrl}/api/v1/pairings`, {
+    method: 'POST',
+    headers: authorizationHeaders(),
+  });
   assert.equal(created.status, 201);
   const challenge = (await created.json()) as {
     data: { id: string; qrPayload: { nonce: string } };
@@ -194,6 +223,7 @@ test('M3 API requires Desktop approval before a mobile receives its secure token
 
   const approved = await fetch(`${baseUrl}/api/v1/pairings/${challenge.data.id}/approve`, {
     method: 'POST',
+    headers: authorizationHeaders(),
   });
   assert.equal(approved.status, 200);
 
@@ -249,7 +279,9 @@ test('M9 diagnostics gives a concrete recovery action when no session is running
   await listen(server, 0);
   const address = server.address() as AddressInfo;
 
-  const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`, {
+    headers: authorizationHeaders(),
+  });
   const body = (await response.json()) as {
     data: {
       agent: { status: string; version: string };

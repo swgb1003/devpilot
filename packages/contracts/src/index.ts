@@ -284,6 +284,12 @@ export interface ProposedFileChange {
   readonly afterSha256: string;
   readonly additions: number;
   readonly deletions: number;
+  readonly selected: boolean;
+}
+
+export interface ChangeFileReview extends ProposedFileChange {
+  /** A bounded, line-oriented review diff; it never includes project secrets. */
+  readonly diff: string;
 }
 
 export type ChangeSetState = 'proposed' | 'applied' | 'reverted' | 'conflicted';

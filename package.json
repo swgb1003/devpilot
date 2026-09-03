@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev:agent": "corepack pnpm --filter @devpilot/agent dev",
-    "dev:desktop": "corepack pnpm --filter @devpilot/desktop dev",
+    "dev:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-desktop-dev.ps1",
     "dev:desktop:web": "corepack pnpm --filter @devpilot/desktop dev:web",
     "build": "corepack pnpm -r --if-present build",
     "typecheck": "corepack pnpm -r --if-present typecheck",

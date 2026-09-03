@@ -12,10 +12,12 @@ coverage/
 build/
 apps/mobile/android/local.properties
 apps/mobile/android/app/.cxx/
+apps/mobile/android/.gradle/
 apps/mobile/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 
 # Rust / Tauri
 target/
+apps/desktop/src-tauri/target-*/
 apps/desktop/src-tauri/gen/
 
 # TypeScript incremental compiler state

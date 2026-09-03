@@ -1,10 +1,28 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 
-import type { ChangeSet, ChangeValidation, ChangeValidationState, ProposedFileChange } from '@devpilot/contracts';
+import type {
+  ChangeSet,
+  ChangeFileReview,
+  ChangeValidation,
+  ChangeValidationState,
+  ProposedFileChange,
+} from '@devpilot/contracts';
 
 import { ActivityStore } from './activity-store.js';
 import { CodexCliProvider, type CodexContextFile } from './codex-cli-provider.js';
@@ -34,6 +52,7 @@ interface ChangeFileRow {
   readonly after_content: string;
   readonly additions: number;
   readonly deletions: number;
+  readonly selected: number;
 }
 
 interface SourceFile extends CodexContextFile {
@@ -75,12 +94,14 @@ export class ChangeService {
         after_content TEXT NOT NULL,
         additions INTEGER NOT NULL,
         deletions INTEGER NOT NULL,
+        selected INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (change_set_id, path)
       );
     `);
     this.#ensureColumn('validation_state', "TEXT NOT NULL DEFAULT 'not_run'");
     this.#ensureColumn('validation_detail', 'TEXT');
     this.#ensureColumn('validated_at', 'TEXT');
+    this.#ensureFileColumn('selected', 'INTEGER NOT NULL DEFAULT 1');
   }
 
   async generate(fixRequestId: string): Promise<ChangeSet> {
@@ -102,22 +123,47 @@ export class ChangeService {
     const changed = validateProposal(proposal.files, sourceFiles);
     const id = randomUUID();
     const createdAt = new Date().toISOString();
-    this.#database.prepare(
-      `INSERT INTO change_sets
+    this.#database
+      .prepare(
+        `INSERT INTO change_sets
        (id,fix_request_id,state,summary,risks_json,created_at,applied_at,validation_state,validation_detail,validated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    ).run(id, request.id, 'proposed', proposal.summary.trim(), JSON.stringify(proposal.risks), createdAt, null, 'not_run', null, null);
+      )
+      .run(
+        id,
+        request.id,
+        'proposed',
+        proposal.summary.trim(),
+        JSON.stringify(proposal.risks),
+        createdAt,
+        null,
+        'not_run',
+        null,
+        null,
+      );
     const insertFile = this.#database.prepare(
       `INSERT INTO change_set_files
-        (change_set_id,path,before_sha256,after_sha256,before_content,after_content,additions,deletions)
-       VALUES (?,?,?,?,?,?,?,?)`,
+        (change_set_id,path,before_sha256,after_sha256,before_content,after_content,additions,deletions,selected)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
     );
     for (const file of changed) {
-      insertFile.run(id, file.path, file.beforeSha256, sha256(file.afterContent), file.beforeContent, file.afterContent, file.additions, file.deletions);
+      insertFile.run(
+        id,
+        file.path,
+        file.beforeSha256,
+        sha256(file.afterContent),
+        file.beforeContent,
+        file.afterContent,
+        file.additions,
+        file.deletions,
+        1,
+      );
     }
     const result = this.get(id);
     this.activities.append({
-      kind: 'change.proposed', severity: 'success', message: 'Codex による修正案を生成しました。適用前の確認が必要です。',
+      kind: 'change.proposed',
+      severity: 'success',
+      message: 'Codex による修正案を生成しました。適用前の確認が必要です。',
       metadata: { changeSetId: id, fixRequestId: request.id, fileCount: result.files.length },
     });
     return result;
@@ -130,10 +176,52 @@ export class ChangeService {
   }
 
   latestForFixRequest(fixRequestId: string): ChangeSet | undefined {
-    const row = this.#database.prepare(
-      'SELECT id,fix_request_id,state,summary,risks_json,created_at,applied_at,validation_state,validation_detail,validated_at FROM change_sets WHERE fix_request_id=? ORDER BY created_at DESC LIMIT 1',
-    ).get(fixRequestId) as ChangeSetRow | undefined;
+    const row = this.#database
+      .prepare(
+        'SELECT id,fix_request_id,state,summary,risks_json,created_at,applied_at,validation_state,validation_detail,validated_at FROM change_sets WHERE fix_request_id=? ORDER BY created_at DESC LIMIT 1',
+      )
+      .get(fixRequestId) as ChangeSetRow | undefined;
     return row ? toChangeSet(row, this.#files(row.id)) : undefined;
+  }
+
+  reviewFile(id: string, path: string): ChangeFileReview {
+    const file = this.#files(id).find((candidate) => candidate.path === path);
+    if (!file) throw invalid('指定された修正ファイルが見つかりません。');
+    return {
+      path: file.path,
+      beforeSha256: file.before_sha256,
+      afterSha256: file.after_sha256,
+      additions: file.additions,
+      deletions: file.deletions,
+      selected: file.selected === 1,
+      diff: reviewDiff(file.before_content, file.after_content),
+    };
+  }
+
+  selectFiles(id: string, paths: readonly string[]): ChangeSet {
+    const row = this.#row(id);
+    if (row.state !== 'proposed') throw conflict('適用前の修正案だけを選択し直せます。');
+    const files = this.#files(id);
+    const selected = new Set(paths);
+    if (!selected.size || selected.size > files.length || [...selected].some((path) => !files.some((file) => file.path === path))) {
+      throw invalid('少なくとも1つの修正ファイルを選択してください。');
+    }
+    this.#database.exec('BEGIN');
+    try {
+      this.#database.prepare('UPDATE change_set_files SET selected=0 WHERE change_set_id=?').run(id);
+      const markSelected = this.#database.prepare(
+        'UPDATE change_set_files SET selected=1 WHERE change_set_id=? AND path=?',
+      );
+      for (const path of selected) markSelected.run(id, path);
+      this.#database
+        .prepare('UPDATE change_sets SET validation_state=?, validation_detail=NULL, validated_at=NULL WHERE id=?')
+        .run('not_run', id);
+      this.#database.exec('COMMIT');
+    } catch (error) {
+      this.#database.exec('ROLLBACK');
+      throw error;
+    }
+    return this.get(id);
   }
 
   async validate(id: string): Promise<ChangeSet> {
@@ -148,7 +236,7 @@ export class ChangeService {
       // project has pre-existing findings that are unrelated to this change.
       const baseline = await this.projectSessions.analyzeProject(root);
       copyProjectForAnalysis(root, stage);
-      const proposalFiles = this.#files(id);
+      const proposalFiles = this.#selectedFiles(id);
       for (const file of proposalFiles) {
         writeFileSync(safeProjectFile(stage, file.path), file.after_content, 'utf8');
       }
@@ -156,9 +244,7 @@ export class ChangeService {
         stage,
         proposalFiles.map((file) => file.path),
       );
-      const analysis = format.passed
-        ? await this.projectSessions.analyzeProject(stage)
-        : undefined;
+      const analysis = format.passed ? await this.projectSessions.analyzeProject(stage) : undefined;
       const checkedAt = new Date().toISOString();
       const hasNoNewIssues =
         analysis !== undefined &&
@@ -169,16 +255,27 @@ export class ChangeService {
       const detail = !format.passed
         ? format.detail
         : passed && !analysis!.passed
-        ? `既存の flutter analyze 指摘（${baseline.issueCount}件）から増えていません（修正案: ${analysis.issueCount}件）。`
-        : analysis!.detail;
-      this.#database.prepare(
-        'UPDATE change_sets SET validation_state=?, validation_detail=?, validated_at=? WHERE id=?',
-      ).run(passed ? 'passed' : 'failed', detail, checkedAt, id);
+          ? `既存の flutter analyze 指摘（${baseline.issueCount}件）から増えていません（修正案: ${analysis.issueCount}件）。`
+          : analysis!.detail;
+      this.#database
+        .prepare(
+          'UPDATE change_sets SET validation_state=?, validation_detail=?, validated_at=? WHERE id=?',
+        )
+        .run(passed ? 'passed' : 'failed', detail, checkedAt, id);
       const result = this.get(id);
       this.activities.append({
-        kind: 'job.updated', severity: passed ? 'success' : 'error',
-        message: passed ? '修正案の flutter analyze 検証に成功しました。' : '修正案の flutter analyze 検証に失敗しました。適用はブロックされます。',
-        metadata: { changeSetId: id, passed, formatPassed: format.passed, baselineIssues: baseline.issueCount, proposalIssues: analysis?.issueCount },
+        kind: 'job.updated',
+        severity: passed ? 'success' : 'error',
+        message: passed
+          ? '修正案の flutter analyze 検証に成功しました。'
+          : '修正案の flutter analyze 検証に失敗しました。適用はブロックされます。',
+        metadata: {
+          changeSetId: id,
+          passed,
+          formatPassed: format.passed,
+          baselineIssues: baseline.issueCount,
+          proposalIssues: analysis?.issueCount,
+        },
       });
       return result;
     } finally {
@@ -197,23 +294,34 @@ export class ChangeService {
     const requestProject = this.projectSessions.projectForSession(request.sessionId);
     const rootPath = requestProject.rootPath;
     const root = realpathSync(rootPath);
-    const files = this.#files(id);
+    const files = this.#selectedFiles(id);
     for (const file of files) {
       const absolutePath = safeProjectFile(root, file.path);
-      if (!isRegularFile(absolutePath) || sha256(readFileSync(absolutePath, 'utf8')) !== file.before_sha256) {
+      if (
+        !isRegularFile(absolutePath) ||
+        sha256(readFileSync(absolutePath, 'utf8')) !== file.before_sha256
+      ) {
         this.#database.prepare("UPDATE change_sets SET state = 'conflicted' WHERE id = ?").run(id);
-        throw conflict(`修正対象 ${file.path} は案の生成後に変更されています。再度修正案を生成してください。`);
+        throw conflict(
+          `修正対象 ${file.path} は案の生成後に変更されています。再度修正案を生成してください。`,
+        );
       }
     }
     for (const file of files) {
       writeFileSync(safeProjectFile(root, file.path), file.after_content, 'utf8');
     }
     const appliedAt = new Date().toISOString();
-    this.#database.prepare("UPDATE change_sets SET state = 'applied', applied_at = ? WHERE id = ?").run(appliedAt, id);
+    this.#database
+      .prepare("UPDATE change_sets SET state = 'applied', applied_at = ? WHERE id = ?")
+      .run(appliedAt, id);
     const hotReloaded = this.projectSessions.hotReloadProject(requestProject.id);
     const result = this.get(id);
     this.activities.append({
-      kind: 'change.applied', severity: 'success', message: hotReloaded ? '修正案を適用し、Flutter ホットリロードを要求しました。' : '承認された Dart 修正案をプロジェクトへ適用しました。Flutter は再起動してください。',
+      kind: 'change.applied',
+      severity: 'success',
+      message: hotReloaded
+        ? '修正案を適用し、Flutter ホットリロードを要求しました。'
+        : '承認された Dart 修正案をプロジェクトへ適用しました。Flutter は再起動してください。',
       metadata: { changeSetId: id, fixRequestId: request.id, fileCount: files.length, hotReloaded },
     });
     return result;
@@ -226,11 +334,16 @@ export class ChangeService {
     const request = this.fixRequests.get(row.fix_request_id);
     const project = this.projectSessions.projectForSession(request.sessionId);
     const root = realpathSync(project.rootPath);
-    const files = this.#files(id);
+    const files = this.#selectedFiles(id);
     for (const file of files) {
       const absolutePath = safeProjectFile(root, file.path);
-      if (!isRegularFile(absolutePath) || sha256(readFileSync(absolutePath, 'utf8')) !== file.after_sha256) {
-        throw conflict(`修正対象 ${file.path} は適用後に変更されています。安全のためロールバックを中止しました。`);
+      if (
+        !isRegularFile(absolutePath) ||
+        sha256(readFileSync(absolutePath, 'utf8')) !== file.after_sha256
+      ) {
+        throw conflict(
+          `修正対象 ${file.path} は適用後に変更されています。安全のためロールバックを中止しました。`,
+        );
       }
     }
     for (const file of files) {
@@ -240,7 +353,11 @@ export class ChangeService {
     const hotReloaded = this.projectSessions.hotReloadProject(project.id);
     const result = this.get(id);
     this.activities.append({
-      kind: 'change.reverted', severity: 'warning', message: hotReloaded ? '適用済み修正案をロールバックし、Flutter ホットリロードを要求しました。' : '適用済み修正案を、保存済みの適用前内容へロールバックしました。Flutter は再起動してください。',
+      kind: 'change.reverted',
+      severity: 'warning',
+      message: hotReloaded
+        ? '適用済み修正案をロールバックし、Flutter ホットリロードを要求しました。'
+        : '適用済み修正案を、保存済みの適用前内容へロールバックしました。Flutter は再起動してください。',
       metadata: { changeSetId: id, fixRequestId: request.id, fileCount: files.length, hotReloaded },
     });
     return result;
@@ -251,20 +368,44 @@ export class ChangeService {
   }
 
   #row(id: string): ChangeSetRow {
-    const row = this.#database.prepare('SELECT * FROM change_sets WHERE id = ?').get(id) as ChangeSetRow | undefined;
-    if (!row) throw new AgentError({ code: 'REQUEST_INVALID', message: '修正案が見つかりません。', status: 404, action: 'CHECK_REQUEST' });
+    const row = this.#database.prepare('SELECT * FROM change_sets WHERE id = ?').get(id) as
+      ChangeSetRow | undefined;
+    if (!row)
+      throw new AgentError({
+        code: 'REQUEST_INVALID',
+        message: '修正案が見つかりません。',
+        status: 404,
+        action: 'CHECK_REQUEST',
+      });
     return row;
   }
 
   #files(id: string): ChangeFileRow[] {
-    return this.#database.prepare('SELECT * FROM change_set_files WHERE change_set_id = ? ORDER BY path').all(id) as unknown as ChangeFileRow[];
+    return this.#database
+      .prepare('SELECT * FROM change_set_files WHERE change_set_id = ? ORDER BY path')
+      .all(id) as unknown as ChangeFileRow[];
   }
 
   #ensureColumn(name: string, definition: string): void {
-    const columns = this.#database.prepare('PRAGMA table_info(change_sets)').all() as Array<{ name: string }>;
+    const columns = this.#database.prepare('PRAGMA table_info(change_sets)').all() as Array<{
+      name: string;
+    }>;
     if (!columns.some((column) => column.name === name)) {
       this.#database.exec(`ALTER TABLE change_sets ADD COLUMN ${name} ${definition};`);
     }
+  }
+
+  #ensureFileColumn(name: string, definition: string): void {
+    const columns = this.#database.prepare('PRAGMA table_info(change_set_files)').all() as Array<{
+      name: string;
+    }>;
+    if (!columns.some((column) => column.name === name)) {
+      this.#database.exec(`ALTER TABLE change_set_files ADD COLUMN ${name} ${definition};`);
+    }
+  }
+
+  #selectedFiles(id: string): ChangeFileRow[] {
+    return this.#files(id).filter((file) => file.selected === 1);
   }
 }
 
@@ -300,8 +441,20 @@ function listExistingDartFiles(rootPath: string): SourceFile[] {
       if (entry.isFile() && entry.name.endsWith('.dart')) paths.push(absolutePath);
     }
   };
-  try { visit(lib); } catch { return []; }
-  const ordered = paths.sort((left, right) => left.endsWith(`${sep}main.dart`) ? -1 : right.endsWith(`${sep}main.dart`) ? 1 : left.localeCompare(right)).slice(0, 80);
+  try {
+    visit(lib);
+  } catch {
+    return [];
+  }
+  const ordered = paths
+    .sort((left, right) =>
+      left.endsWith(`${sep}main.dart`)
+        ? -1
+        : right.endsWith(`${sep}main.dart`)
+          ? 1
+          : left.localeCompare(right),
+    )
+    .slice(0, 80);
   let characters = 0;
   const files: SourceFile[] = [];
   for (const absolutePath of ordered) {
@@ -311,16 +464,39 @@ function listExistingDartFiles(rootPath: string): SourceFile[] {
     if (containsLikelySecret(content)) continue;
     if (characters + content.length > 600_000) break;
     const path = relative(root, absolutePath).replaceAll('\\', '/');
-    files.push({ path, content, absolutePath, beforeSha256: sha256(readFileSync(absolutePath, 'utf8')) });
+    files.push({
+      path,
+      content,
+      absolutePath,
+      beforeSha256: sha256(readFileSync(absolutePath, 'utf8')),
+    });
     characters += content.length;
   }
   return files;
 }
 
-function validateProposal(proposed: readonly CodexContextFile[], sourceFiles: readonly SourceFile[]): Array<SourceFile & { readonly beforeContent: string; readonly afterContent: string; readonly additions: number; readonly deletions: number }> {
-  if (!proposed.length || proposed.length > 10) throw rejected('修正案の変更ファイル数が許可上限を超えています。');
+function validateProposal(
+  proposed: readonly CodexContextFile[],
+  sourceFiles: readonly SourceFile[],
+): Array<
+  SourceFile & {
+    readonly beforeContent: string;
+    readonly afterContent: string;
+    readonly additions: number;
+    readonly deletions: number;
+  }
+> {
+  if (!proposed.length || proposed.length > 10)
+    throw rejected('修正案の変更ファイル数が許可上限を超えています。');
   const byPath = new Map(sourceFiles.map((file) => [file.path, file]));
-  const result: Array<SourceFile & { beforeContent: string; afterContent: string; additions: number; deletions: number }> = [];
+  const result: Array<
+    SourceFile & {
+      beforeContent: string;
+      afterContent: string;
+      additions: number;
+      deletions: number;
+    }
+  > = [];
   const seen = new Set<string>();
   let totalChangedLines = 0;
   for (const candidate of proposed) {
@@ -329,13 +505,21 @@ function validateProposal(proposed: readonly CodexContextFile[], sourceFiles: re
     if (!source || !path.startsWith('lib/') || !path.endsWith('.dart') || seen.has(path)) {
       throw rejected('Codex が許可されていないファイルを変更しようとしました。');
     }
-    if (candidate.content.includes('\uFFFD') || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(candidate.content)) {
+    if (
+      candidate.content.includes('\uFFFD') ||
+      /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(candidate.content)
+    ) {
       throw rejected('修正案に文字化けまたは許可されない制御文字が含まれています。');
     }
     seen.add(path);
     const counts = lineChanges(source.content, candidate.content);
     totalChangedLines += counts.additions + counts.deletions;
-    result.push({ ...source, beforeContent: source.content, afterContent: candidate.content, ...counts });
+    result.push({
+      ...source,
+      beforeContent: source.content,
+      afterContent: candidate.content,
+      ...counts,
+    });
   }
   if (totalChangedLines === 0) throw rejected('修正案に実際の変更が含まれていません。');
   if (totalChangedLines > 800) throw rejected('修正案の差分が 800 行の上限を超えています。');
@@ -343,46 +527,153 @@ function validateProposal(proposed: readonly CodexContextFile[], sourceFiles: re
 }
 
 function safeProjectFile(root: string, relativePath: string): string {
-  if (!relativePath.startsWith('lib/') || !relativePath.endsWith('.dart') || relativePath.includes('..')) throw rejected('許可されていない修正先です。');
+  if (
+    !relativePath.startsWith('lib/') ||
+    !relativePath.endsWith('.dart') ||
+    relativePath.includes('..')
+  )
+    throw rejected('許可されていない修正先です。');
   const absolutePath = resolve(root, relativePath);
-  if (!absolutePath.toLowerCase().startsWith(`${root.toLowerCase()}${sep}`.toLowerCase())) throw rejected('プロジェクト外のファイルは変更できません。');
+  if (!absolutePath.toLowerCase().startsWith(`${root.toLowerCase()}${sep}`.toLowerCase()))
+    throw rejected('プロジェクト外のファイルは変更できません。');
   return absolutePath;
 }
 
 function isRegularFile(path: string): boolean {
-  try { return lstatSync(path).isFile(); } catch { return false; }
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
-function lineChanges(before: string, after: string): { readonly additions: number; readonly deletions: number } {
-  const a = before.split(/\r?\n/); const b = after.split(/\r?\n/);
+function lineChanges(
+  before: string,
+  after: string,
+): { readonly additions: number; readonly deletions: number } {
+  const a = before.split(/\r?\n/);
+  const b = after.split(/\r?\n/);
   if (a.length * b.length > 1_000_000) return { additions: b.length, deletions: a.length };
   const previous = new Uint16Array(b.length + 1);
   const current = new Uint16Array(b.length + 1);
   for (const left of a) {
-    for (let index = 1; index <= b.length; index += 1) current[index] = left === b[index - 1] ? previous[index - 1]! + 1 : Math.max(previous[index]!, current[index - 1]!);
-    previous.set(current); current.fill(0);
+    for (let index = 1; index <= b.length; index += 1)
+      current[index] =
+        left === b[index - 1]
+          ? previous[index - 1]! + 1
+          : Math.max(previous[index]!, current[index - 1]!);
+    previous.set(current);
+    current.fill(0);
   }
   const common = previous[b.length]!;
   return { additions: b.length - common, deletions: a.length - common };
+}
+
+function reviewDiff(before: string, after: string): string {
+  const beforeLines = before.split(/\r?\n/);
+  const afterLines = after.split(/\r?\n/);
+  // The proposal limit keeps this matrix small in normal use. For unusually
+  // large files, show a bounded replacement review rather than risking an
+  // unbounded response to a mobile client.
+  if (beforeLines.length * afterLines.length > 1_000_000) {
+    return boundedReplacementDiff(beforeLines, afterLines);
+  }
+  const width = afterLines.length + 1;
+  const table = new Uint16Array((beforeLines.length + 1) * width);
+  for (let left = 1; left <= beforeLines.length; left += 1) {
+    for (let right = 1; right <= afterLines.length; right += 1) {
+      table[left * width + right] =
+        beforeLines[left - 1] === afterLines[right - 1]
+          ? table[(left - 1) * width + right - 1]! + 1
+          : Math.max(table[(left - 1) * width + right]!, table[left * width + right - 1]!);
+    }
+  }
+  const lines: string[] = [];
+  let left = beforeLines.length;
+  let right = afterLines.length;
+  while (left > 0 || right > 0) {
+    if (left > 0 && right > 0 && beforeLines[left - 1] === afterLines[right - 1]) {
+      left -= 1;
+      right -= 1;
+    } else if (
+      right > 0 &&
+      (left === 0 || table[left * width + right - 1]! >= table[(left - 1) * width + right]!)
+    ) {
+      lines.push(`+ ${right}: ${afterLines[right - 1]}`);
+      right -= 1;
+    } else {
+      lines.push(`- ${left}: ${beforeLines[left - 1]}`);
+      left -= 1;
+    }
+  }
+  return limitReviewLines(lines.reverse());
+}
+
+function boundedReplacementDiff(before: readonly string[], after: readonly string[]): string {
+  const lines = [
+    ...before.slice(0, 160).map((line, index) => `- ${index + 1}: ${line}`),
+    ...after.slice(0, 160).map((line, index) => `+ ${index + 1}: ${line}`),
+  ];
+  return `${limitReviewLines(lines)}\n… 大きなファイルのため、差分を先頭160行ずつに省略しました。`;
+}
+
+function limitReviewLines(lines: readonly string[]): string {
+  const limit = 360;
+  if (lines.length <= limit) return lines.join('\n');
+  return `${lines.slice(0, limit).join('\n')}\n… ${lines.length - limit}行を省略しました。`;
 }
 
 function containsLikelySecret(value: string): boolean {
   return /(?:api[_-]?key|token|secret|password)\s*[:=]\s*['"][^'"]+/i.test(value);
 }
 
-function sha256(value: string): string { return createHash('sha256').update(value).digest('hex'); }
-function invalid(message: string): AgentError { return new AgentError({ code: 'REQUEST_INVALID', message, status: 400, action: 'CHECK_REQUEST' }); }
-function rejected(message: string): AgentError { return new AgentError({ code: 'CHANGE_SCOPE_REJECTED', message, status: 422, action: 'CHECK_REQUEST' }); }
-function conflict(message: string): AgentError { return new AgentError({ code: 'CHANGE_CONFLICT', message, status: 409, action: 'RETRY' }); }
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+function invalid(message: string): AgentError {
+  return new AgentError({ code: 'REQUEST_INVALID', message, status: 400, action: 'CHECK_REQUEST' });
+}
+function rejected(message: string): AgentError {
+  return new AgentError({
+    code: 'CHANGE_SCOPE_REJECTED',
+    message,
+    status: 422,
+    action: 'CHECK_REQUEST',
+  });
+}
+function conflict(message: string): AgentError {
+  return new AgentError({ code: 'CHANGE_CONFLICT', message, status: 409, action: 'RETRY' });
+}
 
 function toChangeSet(row: ChangeSetRow, files: readonly ChangeFileRow[]): ChangeSet {
   let risks: string[] = [];
-  try { risks = JSON.parse(row.risks_json) as string[]; } catch { risks = []; }
-  const mapped: ProposedFileChange[] = files.map((file) => ({ path: file.path, beforeSha256: file.before_sha256, afterSha256: file.after_sha256, additions: file.additions, deletions: file.deletions }));
+  try {
+    risks = JSON.parse(row.risks_json) as string[];
+  } catch {
+    risks = [];
+  }
+  const mapped: ProposedFileChange[] = files.map((file) => ({
+    path: file.path,
+    beforeSha256: file.before_sha256,
+    afterSha256: file.after_sha256,
+    additions: file.additions,
+    deletions: file.deletions,
+    selected: file.selected === 1,
+  }));
   const validation: ChangeValidation = {
     state: row.validation_state ?? 'not_run',
     ...(row.validated_at ? { checkedAt: row.validated_at } : {}),
     ...(row.validation_detail ? { detail: row.validation_detail } : {}),
   };
-  return { id: row.id, fixRequestId: row.fix_request_id, state: row.state, summary: row.summary, risks, files: mapped, validation, createdAt: row.created_at, ...(row.applied_at ? { appliedAt: row.applied_at } : {}) };
+  return {
+    id: row.id,
+    fixRequestId: row.fix_request_id,
+    state: row.state,
+    summary: row.summary,
+    risks,
+    files: mapped,
+    validation,
+    createdAt: row.created_at,
+    ...(row.applied_at ? { appliedAt: row.applied_at } : {}),
+  };
 }

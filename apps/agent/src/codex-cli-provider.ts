@@ -56,7 +56,7 @@ export class CodexCliProvider {
       writeFileSync(schemaPath, JSON.stringify(proposalSchema), 'utf8');
       writeFileSync(join(workingDirectory, 'context.json'), JSON.stringify(context), 'utf8');
       const prompt = [
-        'You are DevPilot\'s patch proposal assistant.',
+        "You are DevPilot's patch proposal assistant.",
         'Read context.json in the current directory. Return only JSON following the supplied schema.',
         'Propose a minimal fix for the Japanese user instruction and the normalized screen annotation.',
         'Only return complete replacement content for existing paths listed in context.json.',
@@ -67,20 +67,33 @@ export class CodexCliProvider {
       const result = await runCommand(
         resolveCodexExecutable(),
         [
-          'exec', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only',
-          '-C', workingDirectory, '--output-schema', schemaPath,
-          '--output-last-message', outputPath, prompt,
+          'exec',
+          '--ephemeral',
+          '--skip-git-repo-check',
+          '--sandbox',
+          'read-only',
+          '-C',
+          workingDirectory,
+          '--output-schema',
+          schemaPath,
+          '--output-last-message',
+          outputPath,
+          prompt,
         ],
         120_000,
         { cwd: workingDirectory, environment: codexEnvironment() },
       );
       if (result.timedOut || result.exitCode !== 0 || !existsSync(outputPath)) {
-        throw unavailable(result.timedOut ? 'Codex の応答がタイムアウトしました。' : compactDiagnostic(result));
+        throw unavailable(
+          result.timedOut ? 'Codex の応答がタイムアウトしました。' : compactDiagnostic(result),
+        );
       }
       return parseProposal(readFileSync(outputPath, 'utf8'));
     } catch (error) {
       if (error instanceof AgentError) throw error;
-      throw unavailable(error instanceof Error ? error.message : 'Codex CLI を起動できませんでした。');
+      throw unavailable(
+        error instanceof Error ? error.message : 'Codex CLI を起動できませんでした。',
+      );
     } finally {
       // The directory contains only the bounded, temporary context created above.
       rmSync(workingDirectory, { recursive: true, force: true, maxRetries: 2 });
@@ -135,10 +148,20 @@ function parseProposal(raw: string): CodexProposal {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error();
     const candidate = parsed as Record<string, unknown>;
     if (
-      typeof candidate.summary !== 'string' || !Array.isArray(candidate.risks) || !Array.isArray(candidate.files) ||
+      typeof candidate.summary !== 'string' ||
+      !Array.isArray(candidate.risks) ||
+      !Array.isArray(candidate.files) ||
       candidate.risks.some((risk) => typeof risk !== 'string') ||
-      candidate.files.some((file) => typeof file !== 'object' || file === null || Array.isArray(file) || typeof (file as Record<string, unknown>).path !== 'string' || typeof (file as Record<string, unknown>).content !== 'string')
-    ) throw new Error();
+      candidate.files.some(
+        (file) =>
+          typeof file !== 'object' ||
+          file === null ||
+          Array.isArray(file) ||
+          typeof (file as Record<string, unknown>).path !== 'string' ||
+          typeof (file as Record<string, unknown>).content !== 'string',
+      )
+    )
+      throw new Error();
     return {
       summary: candidate.summary,
       risks: candidate.risks as string[],
@@ -151,9 +174,17 @@ function parseProposal(raw: string): CodexProposal {
 
 function compactDiagnostic(result: { readonly stderr: string; readonly stdout: string }): string {
   const diagnostic = (result.stderr || result.stdout).replaceAll(/\s+/g, ' ').trim().slice(0, 500);
-  return diagnostic ? `Codex CLI を利用できませんでした: ${diagnostic}` : 'Codex CLI を利用できませんでした。VS Code の Codex ログインを確認してください。';
+  return diagnostic
+    ? `Codex CLI を利用できませんでした: ${diagnostic}`
+    : 'Codex CLI を利用できませんでした。VS Code の Codex ログインを確認してください。';
 }
 
 function unavailable(message: string): AgentError {
-  return new AgentError({ code: 'AI_PROVIDER_UNAVAILABLE', message, status: 503, retryable: true, action: 'RETRY' });
+  return new AgentError({
+    code: 'AI_PROVIDER_UNAVAILABLE',
+    message,
+    status: 503,
+    retryable: true,
+    action: 'RETRY',
+  });
 }

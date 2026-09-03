@@ -7,7 +7,8 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:flutter/foundation.dart' show consolidateHttpClientResponseBytes;
+import 'package:flutter/foundation.dart'
+    show consolidateHttpClientResponseBytes;
 
 class PairingQrPayload {
   const PairingQrPayload({
@@ -95,15 +96,42 @@ class PairingPollResult {
 }
 
 class RegisteredProject {
-  const RegisteredProject({required this.id, required this.name, required this.rootPath});
-  final String id; final String name; final String rootPath;
-  factory RegisteredProject.fromJson(Map<String, dynamic> json) => RegisteredProject(id: json['id'] as String, name: json['name'] as String, rootPath: json['rootPath'] as String);
+  const RegisteredProject({
+    required this.id,
+    required this.name,
+    required this.rootPath,
+  });
+  final String id;
+  final String name;
+  final String rootPath;
+  factory RegisteredProject.fromJson(Map<String, dynamic> json) =>
+      RegisteredProject(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        rootPath: json['rootPath'] as String,
+      );
 }
 
 class DevSession {
-  const DevSession({required this.id, required this.projectId, required this.deviceId, required this.state, this.detail});
-  final String id; final String projectId; final String deviceId; final String state; final String? detail;
-  factory DevSession.fromJson(Map<String, dynamic> json) => DevSession(id: json['id'] as String, projectId: json['projectId'] as String, deviceId: json['deviceId'] as String, state: json['state'] as String, detail: json['detail'] as String?);
+  const DevSession({
+    required this.id,
+    required this.projectId,
+    required this.deviceId,
+    required this.state,
+    this.detail,
+  });
+  final String id;
+  final String projectId;
+  final String deviceId;
+  final String state;
+  final String? detail;
+  factory DevSession.fromJson(Map<String, dynamic> json) => DevSession(
+    id: json['id'] as String,
+    projectId: json['projectId'] as String,
+    deviceId: json['deviceId'] as String,
+    state: json['state'] as String,
+    detail: json['detail'] as String?,
+  );
 }
 
 class AgentDiagnostics {
@@ -152,6 +180,40 @@ class AgentDiagnostics {
       recoveryAction: recovery['action'] as String,
       recoveryTitle: recovery['title'] as String,
       recoveryMessage: recovery['message'] as String,
+    );
+  }
+}
+
+class AgentActivity {
+  const AgentActivity({
+    required this.id,
+    required this.kind,
+    required this.severity,
+    required this.message,
+    required this.occurredAt,
+  });
+
+  final String id;
+  final String kind;
+  final String severity;
+  final String message;
+  final DateTime occurredAt;
+
+  factory AgentActivity.fromJson(Map<String, dynamic> json) {
+    final occurredAt = DateTime.tryParse(json['occurredAt'] as String? ?? '');
+    if (json['id'] is! String ||
+        json['kind'] is! String ||
+        json['severity'] is! String ||
+        json['message'] is! String ||
+        occurredAt == null) {
+      throw const PairingException('履歴情報の形式が正しくありません。');
+    }
+    return AgentActivity(
+      id: json['id'] as String,
+      kind: json['kind'] as String,
+      severity: json['severity'] as String,
+      message: json['message'] as String,
+      occurredAt: occurredAt.toLocal(),
     );
   }
 }
@@ -250,8 +312,11 @@ class ChangeSet {
   factory ChangeSet.fromJson(Map<String, dynamic> json) {
     final files = json['files'];
     final risks = json['risks'];
-    if (json['id'] is! String || json['state'] is! String ||
-        json['summary'] is! String || files is! List || risks is! List ||
+    if (json['id'] is! String ||
+        json['state'] is! String ||
+        json['summary'] is! String ||
+        files is! List ||
+        risks is! List ||
         json['validation'] is! Map<String, dynamic>) {
       throw const PairingException('修正案の応答が正しくありません。');
     }
@@ -264,7 +329,10 @@ class ChangeSet {
       state: json['state'] as String,
       summary: json['summary'] as String,
       risks: risks.whereType<String>().toList(growable: false),
-      files: files.whereType<Map<String, dynamic>>().map(ChangeFile.fromJson).toList(growable: false),
+      files: files
+          .whereType<Map<String, dynamic>>()
+          .map(ChangeFile.fromJson)
+          .toList(growable: false),
       validationState: validation['state'] as String,
       validationDetail: validation['detail'] as String?,
     );
@@ -272,16 +340,47 @@ class ChangeSet {
 }
 
 class ChangeFile {
-  const ChangeFile({required this.path, required this.additions, required this.deletions});
+  const ChangeFile({
+    required this.path,
+    required this.additions,
+    required this.deletions,
+    required this.selected,
+  });
   final String path;
   final int additions;
   final int deletions;
+  final bool selected;
 
   factory ChangeFile.fromJson(Map<String, dynamic> json) {
-    if (json['path'] is! String || json['additions'] is! int || json['deletions'] is! int) {
+    if (json['path'] is! String ||
+        json['additions'] is! int ||
+        json['deletions'] is! int ||
+        json['selected'] is! bool) {
       throw const PairingException('修正対象ファイルの情報が正しくありません。');
     }
-    return ChangeFile(path: json['path'] as String, additions: json['additions'] as int, deletions: json['deletions'] as int);
+    return ChangeFile(
+      path: json['path'] as String,
+      additions: json['additions'] as int,
+      deletions: json['deletions'] as int,
+      selected: json['selected'] as bool,
+    );
+  }
+}
+
+class ChangeFileReview {
+  const ChangeFileReview({required this.path, required this.diff});
+
+  final String path;
+  final String diff;
+
+  factory ChangeFileReview.fromJson(Map<String, dynamic> json) {
+    if (json['path'] is! String || json['diff'] is! String) {
+      throw const PairingException('修正差分の情報が正しくありません。');
+    }
+    return ChangeFileReview(
+      path: json['path'] as String,
+      diff: json['diff'] as String,
+    );
   }
 }
 
@@ -420,7 +519,10 @@ class PairingRepository {
     await _storage.write(key: _deviceIdKey, value: deviceId);
     await _storage.write(
       key: _endpointKey,
-      value: jsonEncode({'hosts': payload.hostCandidates, 'port': payload.port}),
+      value: jsonEncode({
+        'hosts': payload.hostCandidates,
+        'port': payload.port,
+      }),
     );
     await _storage.write(
       key: _fingerprintKey,
@@ -491,17 +593,35 @@ class PairingRepository {
   }
 
   Future<List<RegisteredProject>> projects() async {
-    final token = await _storage.read(key: _accessTokenKey); final payload = await _storedEndpointPayload();
-    if (token == null || payload == null) throw const PairingException('PCとの接続が必要です。');
-    final body = await _requestJson(payload, 'GET', '/api/v1/mobile/projects', headers: {'Authorization': 'Bearer $token'});
-    final data = body['data']; if (data is! List) throw const PairingException('プロジェクト一覧を取得できませんでした。');
-    return data.whereType<Map<String, dynamic>>().map(RegisteredProject.fromJson).toList(growable: false);
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null)
+      throw const PairingException('PCとの接続が必要です。');
+    final body = await _requestJson(
+      payload,
+      'GET',
+      '/api/v1/mobile/projects',
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    final data = body['data'];
+    if (data is! List) throw const PairingException('プロジェクト一覧を取得できませんでした。');
+    return data
+        .whereType<Map<String, dynamic>>()
+        .map(RegisteredProject.fromJson)
+        .toList(growable: false);
   }
 
   Future<DevSession?> currentSession() async {
-    final token = await _storage.read(key: _accessTokenKey); final payload = await _storedEndpointPayload();
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
     if (token == null || payload == null) return null;
-    final body = await _requestJson(payload, 'GET', '/api/v1/mobile/session', headers: {'Authorization': 'Bearer $token'}); final data = body['data'];
+    final body = await _requestJson(
+      payload,
+      'GET',
+      '/api/v1/mobile/session',
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    final data = body['data'];
     return data == null ? null : DevSession.fromJson(data);
   }
 
@@ -521,15 +641,59 @@ class PairingRepository {
     return AgentDiagnostics.fromJson(_data(body));
   }
 
+  Future<List<AgentActivity>> activities({int limit = 30}) async {
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null) {
+      throw const PairingException('PCとの接続情報がありません。');
+    }
+    final safeLimit = limit.clamp(1, 100);
+    final body = await _requestJson(
+      payload,
+      'GET',
+      '/api/v1/mobile/activities?limit=$safeLimit',
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    final data = body['data'];
+    if (data is! List) throw const PairingException('履歴情報を取得できませんでした。');
+    return data
+        .whereType<Map<String, dynamic>>()
+        .map(AgentActivity.fromJson)
+        .toList(growable: false);
+  }
+
   Future<DevSession> startSession(String projectId) async {
-    final token = await _storage.read(key: _accessTokenKey); final payload = await _storedEndpointPayload();
-    if (token == null || payload == null) throw const PairingException('PCとの接続が必要です。');
-    final devicesBody = await _requestJson(payload, 'GET', '/api/v1/mobile/devices', headers: {'Authorization': 'Bearer $token'});
-    final devices = devicesBody['data']; if (devices is! List || devices.isEmpty) throw const PairingException('PCでAndroid実機を接続してから、もう一度試してください。');
-    final device = devices.whereType<Map<String, dynamic>>().firstWhere((item) => item['isAuthorized'] == true, orElse: () => <String, dynamic>{});
-    final deviceId = device['id']; if (deviceId is! String) throw const PairingException('authorized状態のAndroid実機が見つかりません。');
-    final body = await _requestJson(payload, 'POST', '/api/v1/mobile/sessions', headers: {'Authorization': 'Bearer $token'}, body: {'projectId': projectId, 'deviceId': deviceId});
-    final data = body['data']; if (data is! Map<String, dynamic>) throw const PairingException('セッションの応答が正しくありません。'); return DevSession.fromJson(data);
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null)
+      throw const PairingException('PCとの接続が必要です。');
+    final devicesBody = await _requestJson(
+      payload,
+      'GET',
+      '/api/v1/mobile/devices',
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    final devices = devicesBody['data'];
+    if (devices is! List || devices.isEmpty)
+      throw const PairingException('PCでAndroid実機を接続してから、もう一度試してください。');
+    final device = devices.whereType<Map<String, dynamic>>().firstWhere(
+      (item) => item['isAuthorized'] == true,
+      orElse: () => <String, dynamic>{},
+    );
+    final deviceId = device['id'];
+    if (deviceId is! String)
+      throw const PairingException('authorized状態のAndroid実機が見つかりません。');
+    final body = await _requestJson(
+      payload,
+      'POST',
+      '/api/v1/mobile/sessions',
+      headers: {'Authorization': 'Bearer $token'},
+      body: {'projectId': projectId, 'deviceId': deviceId},
+    );
+    final data = body['data'];
+    if (data is! Map<String, dynamic>)
+      throw const PairingException('セッションの応答が正しくありません。');
+    return DevSession.fromJson(data);
   }
 
   Future<PreviewArtifact> capturePreview() async {
@@ -569,12 +733,16 @@ class PairingRepository {
     required String instruction,
     required double x,
     required double y,
+    double? width,
+    double? height,
   }) async {
     final token = await _storage.read(key: _accessTokenKey);
     final payload = await _storedEndpointPayload();
     if (token == null || payload == null) {
       throw const PairingException('PCとの接続が必要です。');
     }
+    final isRectangle =
+        width != null && height != null && width > 0 && height > 0;
     final requestId = _newUuid();
     final body = await _requestJson(
       payload,
@@ -585,7 +753,16 @@ class PairingRepository {
         'sessionId': sessionId,
         'screenshotId': screenshotId,
         'instruction': instruction,
-        'annotation': {'kind': 'point', 'x': x, 'y': y},
+        'annotation':
+            isRectangle
+                ? {
+                  'kind': 'rectangle',
+                  'x': x,
+                  'y': y,
+                  'width': width,
+                  'height': height,
+                }
+                : {'kind': 'point', 'x': x, 'y': y},
         'clientRequestId': requestId,
         'idempotencyKey': 'mobile-$requestId',
       },
@@ -710,6 +887,40 @@ class PairingRepository {
     return ChangeSet.fromJson(_data(body));
   }
 
+  Future<ChangeFileReview> reviewChangeSetFile(String id, String path) async {
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null) {
+      throw const PairingException('PCとの接続が必要です。');
+    }
+    final body = await _requestJson(
+      payload,
+      'GET',
+      '/api/v1/mobile/change-sets/$id/review?path=${Uri.encodeQueryComponent(path)}',
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    return ChangeFileReview.fromJson(_data(body));
+  }
+
+  Future<ChangeSet> selectChangeSetFiles(
+    String id,
+    List<String> selectedPaths,
+  ) async {
+    final token = await _storage.read(key: _accessTokenKey);
+    final payload = await _storedEndpointPayload();
+    if (token == null || payload == null) {
+      throw const PairingException('PCとの接続が必要です。');
+    }
+    final body = await _requestJson(
+      payload,
+      'POST',
+      '/api/v1/mobile/change-sets/$id/selection',
+      headers: {'Authorization': 'Bearer $token'},
+      body: {'selectedPaths': selectedPaths},
+    );
+    return ChangeSet.fromJson(_data(body));
+  }
+
   Future<Uint8List> previewImage(String artifactId) async {
     final token = await _storage.read(key: _accessTokenKey);
     final payload = await _storedEndpointPayload();
@@ -731,16 +942,20 @@ class PairingRepository {
           )
           .timeout(const Duration(seconds: 8));
       request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
-      final response = await request.close().timeout(const Duration(seconds: 10));
-      final bytes = await consolidateHttpClientResponseBytes(response).timeout(
+      final response = await request.close().timeout(
         const Duration(seconds: 10),
       );
+      final bytes = await consolidateHttpClientResponseBytes(
+        response,
+      ).timeout(const Duration(seconds: 10));
       if (response.statusCode < 200 || response.statusCode >= 300) {
         String message = 'プレビュー画像を取得できませんでした。';
         try {
           final decoded = jsonDecode(utf8.decode(bytes));
-          final error = decoded is Map<String, dynamic> ? decoded['error'] : null;
-          final fromAgent = error is Map<String, dynamic> ? error['message'] : null;
+          final error =
+              decoded is Map<String, dynamic> ? decoded['error'] : null;
+          final fromAgent =
+              error is Map<String, dynamic> ? error['message'] : null;
           if (fromAgent is String) message = fromAgent;
         } catch (_) {
           // Use the safe generic error message for a non-JSON response.
@@ -785,8 +1000,13 @@ class PairingRepository {
     int? port;
     try {
       final decoded = jsonDecode(endpoint);
-      if (decoded is Map<String, dynamic> && decoded['hosts'] is List && decoded['port'] is int) {
-        hosts = (decoded['hosts'] as List).whereType<String>().where(_isPairingHost).toList(growable: false);
+      if (decoded is Map<String, dynamic> &&
+          decoded['hosts'] is List &&
+          decoded['port'] is int) {
+        hosts = (decoded['hosts'] as List)
+            .whereType<String>()
+            .where(_isPairingHost)
+            .toList(growable: false);
         port = decoded['port'] as int;
       }
     } catch (_) {
@@ -856,20 +1076,13 @@ class PairingRepository {
         );
     try {
       final request = await client
-          .openUrl(
-            method,
-            Uri.parse('https://$host:${payload.port}$path'),
-          )
+          .openUrl(method, Uri.parse('https://$host:${payload.port}$path'))
           .timeout(const Duration(seconds: 8));
       headers.forEach(request.headers.set);
       request.headers.contentType = ContentType.json;
       if (body != null) request.write(jsonEncode(body));
-      final response = await request.close().timeout(
-        responseTimeout,
-      );
-      final raw = await utf8
-          .decodeStream(response)
-          .timeout(responseTimeout);
+      final response = await request.close().timeout(responseTimeout);
+      final raw = await utf8.decodeStream(response).timeout(responseTimeout);
       final decoded = raw.isEmpty ? <String, dynamic>{} : jsonDecode(raw);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         final error = decoded is Map<String, dynamic> ? decoded['error'] : null;

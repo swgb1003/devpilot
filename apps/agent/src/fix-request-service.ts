@@ -70,7 +70,9 @@ export class FixRequestService {
     }
     const screenshot = this.screenshots.metadata(input.screenshotId);
     if (!screenshot || screenshot.sessionId !== input.sessionId) {
-      throw invalid('選択元のスクリーンショットが見つからないか、有効期限が切れています。もう一度対象箇所を選択してください。');
+      throw invalid(
+        '選択元のスクリーンショットが見つからないか、有効期限が切れています。もう一度対象箇所を選択してください。',
+      );
     }
 
     const row: FixRequestRow = {
@@ -107,7 +109,11 @@ export class FixRequestService {
       kind: 'fix_request.created',
       severity: 'success',
       message: 'Point & Fixの修正指示を確認待ちとして作成しました。',
-      metadata: { fixRequestId: row.id, sessionId: row.session_id, screenshotId: row.screenshot_id },
+      metadata: {
+        fixRequestId: row.id,
+        sessionId: row.session_id,
+        screenshotId: row.screenshot_id,
+      },
     });
     return toFixRequest(row);
   }
@@ -142,8 +148,7 @@ export class FixRequestService {
 
   #row(id: string): FixRequestRow {
     const row = this.#database.prepare('SELECT * FROM fix_requests WHERE id = ?').get(id) as
-      | FixRequestRow
-      | undefined;
+      FixRequestRow | undefined;
     if (!row) {
       throw new AgentError({
         code: 'FIX_REQUEST_NOT_FOUND',

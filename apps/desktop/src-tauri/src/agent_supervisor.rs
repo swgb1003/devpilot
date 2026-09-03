@@ -1,5 +1,6 @@
 use std::{
     env,
+    net::TcpListener,
     path::PathBuf,
     process::{Child, Command},
     sync::Mutex,
@@ -11,16 +12,28 @@ use tauri::State;
 const AGENT_PORT: u16 = 47_831;
 const MAX_AUTOMATIC_RESTARTS: u8 = 1;
 
-#[derive(Default)]
 pub struct AgentSupervisor {
     state: Mutex<SupervisorState>,
 }
 
-#[derive(Default)]
 struct SupervisorState {
     child: Option<Child>,
+    desktop_token: String,
     last_exit: Option<String>,
     restart_count: u8,
+}
+
+impl Default for AgentSupervisor {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(SupervisorState {
+                child: None,
+                desktop_token: create_desktop_token(),
+                last_exit: None,
+                restart_count: 0,
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -46,7 +59,17 @@ impl AgentSupervisor {
         format!("http://127.0.0.1:{AGENT_PORT}")
     }
 
-    fn spawn_child() -> Result<Child, String> {
+    fn ensure_port_available(port: u16) -> Result<(), String> {
+        TcpListener::bind(("127.0.0.1", port))
+            .map(drop)
+            .map_err(|_| {
+                format!(
+                    "Agent sidecar cannot start because 127.0.0.1:{port} is already in use. Stop the separate `pnpm dev:agent` process, then start DevPilot Desktop again."
+                )
+            })
+    }
+
+    fn spawn_child(desktop_token: &str) -> Result<Child, String> {
         let workspace_root = Self::workspace_root();
         let entrypoint = env::var_os("DEVPILOT_AGENT_ENTRYPOINT")
             .map(PathBuf::from)
@@ -71,6 +94,7 @@ impl AgentSupervisor {
             .current_dir(workspace_root)
             .env("DEVPILOT_AGENT_HOST", "127.0.0.1")
             .env("DEVPILOT_AGENT_PORT", AGENT_PORT.to_string())
+            .env("DEVPILOT_DESKTOP_TOKEN", desktop_token)
             .spawn()
             .map_err(|error| format!("Failed to start the DevPilot Agent sidecar: {error}"))
     }
@@ -116,7 +140,8 @@ impl AgentSupervisor {
             ));
         }
 
-        state.child = Some(Self::spawn_child()?);
+        Self::ensure_port_available(AGENT_PORT)?;
+        state.child = Some(Self::spawn_child(&state.desktop_token)?);
         if is_restart {
             state.restart_count += 1;
         } else {
@@ -198,6 +223,19 @@ impl AgentSupervisor {
             "Agent sidecar stopped.".to_owned(),
         ))
     }
+
+    pub fn desktop_token(&self) -> Result<String, String> {
+        self.state
+            .lock()
+            .map(|state| state.desktop_token.clone())
+            .map_err(|_| "Agent sidecar state is unavailable.".to_owned())
+    }
+}
+
+fn create_desktop_token() -> String {
+    let mut bytes = [0_u8; 32];
+    getrandom::getrandom(&mut bytes).expect("the operating system must provide random bytes");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 impl Drop for AgentSupervisor {
@@ -226,6 +264,11 @@ pub fn agent_stop(supervisor: State<'_, AgentSupervisor>) -> Result<AgentStatus,
     supervisor.stop()
 }
 
+#[tauri::command]
+pub fn agent_desktop_token(supervisor: State<'_, AgentSupervisor>) -> Result<String, String> {
+    supervisor.desktop_token()
+}
+
 #[cfg(test)]
 mod tests {
     use super::AgentSupervisor;
@@ -240,6 +283,10 @@ mod tests {
     #[test]
     fn starts_restarts_once_after_a_crash_and_stops_the_agent() {
         let supervisor = AgentSupervisor::default();
+        let token = supervisor
+            .desktop_token()
+            .expect("the token should be available");
+        assert_eq!(token.len(), 64);
         let started = supervisor.start().expect("the Agent sidecar should start");
         assert_eq!(started.state, "running");
         assert!(started.pid.is_some());
@@ -267,10 +314,25 @@ mod tests {
         assert_eq!(restarted.state, "restarted");
         assert_eq!(restarted.restart_count, 1);
         assert!(restarted.pid.is_some());
+        assert_eq!(supervisor.desktop_token().unwrap(), token);
 
         let stopped = supervisor
             .stop()
             .expect("the sidecar should stop gracefully");
         assert_eq!(stopped.state, "stopped");
+    }
+
+    #[test]
+    fn reports_when_the_agent_port_is_already_reserved() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("an ephemeral loopback port should be available");
+        let port = listener
+            .local_addr()
+            .expect("the listener should have an address")
+            .port();
+
+        let error = AgentSupervisor::ensure_port_available(port)
+            .expect_err("the occupied port must not be used for a sidecar");
+        assert!(error.contains(&port.to_string()));
     }
 }
