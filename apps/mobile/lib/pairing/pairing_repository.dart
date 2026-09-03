@@ -799,7 +799,10 @@ class PairingRepository {
       'POST',
       '/api/v1/mobile/fix-requests/$fixRequestId/proposals',
       headers: {'Authorization': 'Bearer $token'},
-      responseTimeout: const Duration(seconds: 210),
+      // Codex can need several minutes for the first proposal after it starts.
+      // This remains slightly longer than the Agent-side five-minute limit so
+      // the phone receives its useful diagnostic rather than a transport error.
+      responseTimeout: const Duration(seconds: 330),
     );
     final changeSet = ChangeSet.fromJson(_data(body));
     await _storage.write(key: _lastChangeSetIdKey, value: changeSet.id);

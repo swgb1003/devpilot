@@ -47,6 +47,11 @@ const proposalSchema = {
   },
 } as const;
 
+// A first proposal can require starting the CLI and reading a Flutter screen.
+// Keep this below the mobile request timeout (which includes a small transport
+// allowance) while giving the model enough time to finish a complete response.
+export const codexProposalTimeoutMs = 300_000;
+
 export class CodexCliProvider {
   async propose(context: CodexFixContext): Promise<CodexProposal> {
     const workingDirectory = mkdtempSync(join(tmpdir(), 'devpilot-codex-'));
@@ -80,7 +85,7 @@ export class CodexCliProvider {
           outputPath,
           prompt,
         ],
-        120_000,
+        codexProposalTimeoutMs,
         { cwd: workingDirectory, environment: codexEnvironment() },
       );
       if (result.timedOut || result.exitCode !== 0 || !existsSync(outputPath)) {

@@ -118,7 +118,10 @@ export class ChangeService {
       instruction: request.instruction,
       annotation: request.annotation,
       projectName: project.name,
-      files: sourceFiles.map(({ path, content }) => ({ path, content })),
+      files: proposalContextFiles(sourceFiles, request.instruction).map(({ path, content }) => ({
+        path,
+        content,
+      })),
     });
     const changed = validateProposal(proposal.files, sourceFiles);
     const id = randomUUID();
@@ -203,18 +206,26 @@ export class ChangeService {
     if (row.state !== 'proposed') throw conflict('適用前の修正案だけを選択し直せます。');
     const files = this.#files(id);
     const selected = new Set(paths);
-    if (!selected.size || selected.size > files.length || [...selected].some((path) => !files.some((file) => file.path === path))) {
+    if (
+      !selected.size ||
+      selected.size > files.length ||
+      [...selected].some((path) => !files.some((file) => file.path === path))
+    ) {
       throw invalid('少なくとも1つの修正ファイルを選択してください。');
     }
     this.#database.exec('BEGIN');
     try {
-      this.#database.prepare('UPDATE change_set_files SET selected=0 WHERE change_set_id=?').run(id);
+      this.#database
+        .prepare('UPDATE change_set_files SET selected=0 WHERE change_set_id=?')
+        .run(id);
       const markSelected = this.#database.prepare(
         'UPDATE change_set_files SET selected=1 WHERE change_set_id=? AND path=?',
       );
       for (const path of selected) markSelected.run(id, path);
       this.#database
-        .prepare('UPDATE change_sets SET validation_state=?, validation_detail=NULL, validated_at=NULL WHERE id=?')
+        .prepare(
+          'UPDATE change_sets SET validation_state=?, validation_detail=NULL, validated_at=NULL WHERE id=?',
+        )
         .run('not_run', id);
       this.#database.exec('COMMIT');
     } catch (error) {
@@ -471,6 +482,52 @@ function listExistingDartFiles(rootPath: string): SourceFile[] {
       beforeSha256: sha256(readFileSync(absolutePath, 'utf8')),
     });
     characters += content.length;
+  }
+  return files;
+}
+
+/**
+ * A visual correction normally belongs to a screen or widget, not every
+ * service in the application.  Constrain the first-pass context so Codex can
+ * respond promptly, while retaining main.dart and any file whose source or
+ * name explicitly matches the instruction.  The complete source list remains
+ * available for proposal validation, so a generated change is still checked
+ * against the on-disk version before it can be applied.
+ */
+function proposalContextFiles(
+  sourceFiles: readonly SourceFile[],
+  instruction: string,
+): SourceFile[] {
+  const keywords =
+    instruction
+      .toLocaleLowerCase()
+      .match(/[a-z0-9_]{3,}|[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]{2,}/gu)
+      ?.filter((word) => !['してください', 'について', 'ポイント', 'ボタン'].includes(word)) ?? [];
+  const uniqueKeywords = [...new Set(keywords)].slice(0, 12);
+  const score = (file: SourceFile): number => {
+    const path = file.path.toLocaleLowerCase();
+    const content = file.content.toLocaleLowerCase();
+    let value = file.path === 'lib/main.dart' ? 10_000 : 0;
+    if (path.startsWith('lib/screens/')) value += 200;
+    if (path.startsWith('lib/widgets/')) value += 160;
+    for (const keyword of uniqueKeywords) {
+      if (path.includes(keyword)) value += 2_000;
+      if (content.includes(keyword)) value += 1_000;
+    }
+    return value;
+  };
+  const ordered = [...sourceFiles].sort(
+    (left, right) => score(right) - score(left) || left.path.localeCompare(right.path),
+  );
+  const files: SourceFile[] = [];
+  let characters = 0;
+  for (const file of ordered) {
+    if (files.length >= 18) break;
+    // Always include the first candidate, even if an individual source file
+    // is unusually large; otherwise a project could have no usable context.
+    if (files.length > 0 && characters + file.content.length > 160_000) continue;
+    files.push(file);
+    characters += file.content.length;
   }
   return files;
 }
