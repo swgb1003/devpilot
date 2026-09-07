@@ -61,6 +61,12 @@ function resolveDartExecutable(): string {
 }
 
 const dartExecutable = resolveDartExecutable();
+
+function adbExecutable(): string {
+  return process.platform === 'win32'
+    ? `${process.env.LOCALAPPDATA ?? ''}\\Android\\Sdk\\platform-tools\\adb.exe`
+    : 'adb';
+}
 const flutterEnvironment: NodeJS.ProcessEnv = {
   ...process.env,
   CI: 'true',
@@ -75,12 +81,25 @@ export function isFlutterRunReady(output: string): boolean {
   );
 }
 
+export interface ProjectSessionOptions {
+  /** `host:port` targets to `adb connect` before enumerating devices. */
+  readonly adbConnectTargets?: readonly string[];
+}
+
 export class ProjectSessionService {
   readonly #database: DatabaseSync;
   readonly #activities: ActivityStore;
   readonly #processes = new Map<string, ChildProcess>();
+  readonly #adbConnectTargets: readonly string[];
+  /** Bounded auto-restart bookkeeping per session: recent restart timestamps. */
+  readonly #restarts = new Map<string, number[]>();
 
-  constructor(databasePath: string, activities: ActivityStore) {
+  constructor(
+    databasePath: string,
+    activities: ActivityStore,
+    options: ProjectSessionOptions = {},
+  ) {
+    this.#adbConnectTargets = options.adbConnectTargets ?? [];
     this.#database = new DatabaseSync(databasePath);
     this.#database.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     this.#database.exec(`
@@ -185,6 +204,7 @@ export class ProjectSessionService {
   }
 
   async devices(): Promise<readonly AndroidDevice[]> {
+    await this.#ensureAdbConnected();
     const result = await runCommand(flutterExecutable, ['devices', '--machine'], 15_000, {
       environment: flutterEnvironment,
     });
@@ -209,11 +229,7 @@ export class ProjectSessionService {
         /* Fall through to ADB discovery. */
       }
     }
-    const adb =
-      process.platform === 'win32'
-        ? `${process.env.LOCALAPPDATA ?? ''}\\Android\\Sdk\\platform-tools\\adb.exe`
-        : 'adb';
-    const adbResult = await runCommand(adb, ['devices', '-l'], 8_000);
+    const adbResult = await runCommand(adbExecutable(), ['devices', '-l'], 8_000);
     if (adbResult.exitCode !== 0 || adbResult.timedOut) return [];
     return adbResult.stdout
       .split(/\r?\n/)
@@ -230,6 +246,29 @@ export class ProjectSessionService {
           },
         ];
       });
+  }
+
+  /**
+   * `adb connect` every configured wireless target so a phone reachable only
+   * over wireless ADB or a tunnel can host the session. `adb connect` is
+   * idempotent, so this runs before each discovery pass to recover a target
+   * that dropped while the phone slept.
+   */
+  async #ensureAdbConnected(): Promise<void> {
+    if (this.#adbConnectTargets.length === 0) return;
+    const adb = adbExecutable();
+    for (const target of this.#adbConnectTargets) {
+      const result = await runCommand(adb, ['connect', target], 8_000);
+      const output = `${result.stdout} ${result.stderr}`.toLowerCase();
+      if (!output.includes('connected to') && !output.includes('already connected')) {
+        this.#activities.append({
+          kind: 'device.updated',
+          severity: 'warning',
+          message: `ワイヤレスADBの端末 ${target} へ接続できませんでした。`,
+          metadata: { target, detail: (result.stderr || result.stdout).trim().slice(0, 200) },
+        });
+      }
+    }
   }
 
   async analyzeProject(rootPath: string): Promise<{
@@ -325,21 +364,37 @@ export class ProjectSessionService {
         row.ended_at,
         row.detail,
       );
+    this.#restarts.delete(row.id);
+    this.#launchFlutterRun(row.id, project.root_path, deviceId);
+    this.#activities.append({
+      kind: 'session.started',
+      severity: 'success',
+      message: `開発セッションを開始しました（${project.name}）。`,
+      metadata: { sessionId: row.id, projectId, deviceId },
+    });
+    return toSession(row);
+  }
+
+  /** Max unattended `flutter run` restarts inside {@link RESTART_WINDOW_MS}. */
+  static readonly MAX_RESTARTS = 3;
+  static readonly RESTART_WINDOW_MS = 60_000;
+
+  #launchFlutterRun(sessionId: string, rootPath: string, deviceId: string): void {
     const child = spawn(flutterExecutable, ['run', '-d', deviceId], {
-      cwd: project.root_path,
+      cwd: rootPath,
       env: flutterEnvironment,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
       windowsHide: true,
     });
-    this.#processes.set(row.id, child);
+    this.#processes.set(sessionId, child);
     let output = '';
     const recordOutput = (chunk: Buffer): void => {
       output = `${output}${chunk.toString('utf8')}`.slice(-8_000);
       const normalized = output.replaceAll('\r', '');
       const lastLines = normalized.split('\n').filter(Boolean).slice(-8).join('\n');
       console.log('[session:flutter]', {
-        sessionId: row.id,
+        sessionId,
         output: chunk.toString('utf8').trim(),
       });
       // `flutter run` emits Android logcat lines only after the APK has been
@@ -348,7 +403,7 @@ export class ProjectSessionService {
       // runtime output as a successful launch as well.
       const ready = isFlutterRunReady(normalized);
       this.#setState(
-        row.id,
+        sessionId,
         ready ? 'running' : 'starting',
         ready
           ? `Flutter開発セッションを実行中です。\n${lastLines}`
@@ -358,26 +413,62 @@ export class ProjectSessionService {
     child.stdout?.on('data', recordOutput);
     child.stderr?.on('data', recordOutput);
     child.once('spawn', () =>
-      this.#setState(row.id, 'starting', 'Flutterアプリをビルドしています。'),
+      this.#setState(sessionId, 'starting', 'Flutterアプリをビルドしています。'),
     );
-    child.once('error', (error) => this.#setState(row.id, 'failed', error.message));
+    child.once('error', (error) => this.#setState(sessionId, 'failed', error.message));
     child.once('exit', (code) => {
-      if (this.#processes.delete(row.id)) {
-        const diagnostic = output.replaceAll('\r', '').trim().slice(-4_000);
-        this.#setState(
-          row.id,
-          code === 0 ? 'stopped' : 'failed',
-          `flutter run が終了しました（code ${code ?? 'unknown'}）。${diagnostic ? `\n${diagnostic}` : ''}`,
-        );
+      if (!this.#processes.delete(sessionId)) return;
+      const diagnostic = output.replaceAll('\r', '').trim().slice(-4_000);
+      if (code === 0) {
+        this.#setState(sessionId, 'stopped', `flutter run が終了しました（code 0）。`);
+        return;
       }
+      if (this.#tryScheduleRestart(sessionId, rootPath, deviceId)) return;
+      this.#setState(
+        sessionId,
+        'failed',
+        `flutter run が終了しました（code ${code ?? 'unknown'}）。${diagnostic ? `\n${diagnostic}` : ''}`,
+      );
     });
+  }
+
+  /**
+   * Restart an unexpectedly dead `flutter run` so a phone-only reconnect after
+   * a device sleep or a transient adb drop still finds a live session. Bounded
+   * to avoid a crash loop when the failure is a real compile error.
+   */
+  #tryScheduleRestart(sessionId: string, rootPath: string, deviceId: string): boolean {
+    if (!this.#sessionIsActive(sessionId)) return false;
+    const now = Date.now();
+    const recent = (this.#restarts.get(sessionId) ?? []).filter(
+      (at) => now - at < ProjectSessionService.RESTART_WINDOW_MS,
+    );
+    if (recent.length >= ProjectSessionService.MAX_RESTARTS) return false;
+    recent.push(now);
+    this.#restarts.set(sessionId, recent);
+    this.#setState(
+      sessionId,
+      'starting',
+      `flutter run が停止したため再起動します（${recent.length}/${ProjectSessionService.MAX_RESTARTS}）。`,
+    );
     this.#activities.append({
       kind: 'session.started',
-      severity: 'success',
-      message: `開発セッションを開始しました（${project.name}）。`,
-      metadata: { sessionId: row.id, projectId, deviceId },
+      severity: 'warning',
+      message: 'flutter run を自動再起動しました。',
+      metadata: { sessionId, attempt: recent.length },
     });
-    return toSession(row);
+    setTimeout(() => {
+      if (this.#sessionIsActive(sessionId)) {
+        this.#launchFlutterRun(sessionId, rootPath, deviceId);
+      }
+    }, 2_000).unref?.();
+    return true;
+  }
+
+  #sessionIsActive(sessionId: string): boolean {
+    const row = this.#database.prepare('SELECT state FROM sessions WHERE id = ?').get(sessionId) as
+      { state: string } | undefined;
+    return row?.state === 'starting' || row?.state === 'running';
   }
 
   getSession(): DevSession | undefined {
@@ -395,6 +486,7 @@ export class ProjectSessionService {
 
   async stop(sessionId: string): Promise<DevSession> {
     const current = this.#session(sessionId);
+    this.#restarts.delete(sessionId);
     this.#processes.get(sessionId)?.kill();
     this.#processes.delete(sessionId);
     this.#setState(sessionId, 'stopped', '開発セッションを終了しました。');

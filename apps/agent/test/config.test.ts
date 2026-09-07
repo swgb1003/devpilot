@@ -29,3 +29,36 @@ test('loadAgentConfig rejects a non-loopback bind', () => {
     /only permits.*127\.0\.0\.1/,
   );
 });
+
+test('loadAgentConfig accepts Tailscale pairing hosts and wireless ADB targets', () => {
+  const config = loadAgentConfig(
+    {
+      DEVPILOT_DESKTOP_TOKEN: 'x'.repeat(32),
+      DEVPILOT_PAIRING_EXTRA_HOSTS: '100.101.102.103, 192.168.1.9 , 100.101.102.103',
+      DEVPILOT_ADB_CONNECT_TARGETS: '100.64.5.6:5555,phone.local:5555',
+    },
+    'C:\\workspace',
+  );
+
+  assert.deepEqual(config.pairingExtraHosts, ['100.101.102.103', '192.168.1.9']);
+  assert.deepEqual(config.adbConnectTargets, ['100.64.5.6:5555', 'phone.local:5555']);
+});
+
+test('loadAgentConfig rejects a public pairing host and a malformed ADB target', () => {
+  assert.throws(
+    () =>
+      loadAgentConfig({
+        DEVPILOT_DESKTOP_TOKEN: 'x'.repeat(32),
+        DEVPILOT_PAIRING_EXTRA_HOSTS: '8.8.8.8',
+      }),
+    /DEVPILOT_PAIRING_EXTRA_HOSTS/,
+  );
+  assert.throws(
+    () =>
+      loadAgentConfig({
+        DEVPILOT_DESKTOP_TOKEN: 'x'.repeat(32),
+        DEVPILOT_ADB_CONNECT_TARGETS: '100.64.5.6',
+      }),
+    /DEVPILOT_ADB_CONNECT_TARGETS/,
+  );
+});

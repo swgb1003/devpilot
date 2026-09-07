@@ -1165,5 +1165,9 @@ bool _isPairingHost(String value) {
   return (parts[0] == 127 && parts[1] == 0 && parts[2] == 0 && parts[3] == 1) ||
       parts[0] == 10 ||
       (parts[0] == 172 && parts[1]! >= 16 && parts[1]! <= 31) ||
-      (parts[0] == 192 && parts[1] == 168);
+      (parts[0] == 192 && parts[1] == 168) ||
+      // RFC 6598 shared address space (100.64.0.0/10): Tailscale / WireGuard
+      // meshes assign phone-reachable addresses here, letting a phone off the
+      // local Wi-Fi pair with a headless Agent.
+      (parts[0] == 100 && parts[1]! >= 64 && parts[1]! <= 127);
 }

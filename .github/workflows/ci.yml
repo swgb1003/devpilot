@@ -41,6 +41,38 @@ jobs:
         run: flutter analyze
       - working-directory: apps/mobile
         run: flutter test
+      # Keep the deterministic change-flow fixture buildable and analyze-clean.
+      - working-directory: fixtures/sample_flutter_app
+        run: flutter pub get
+      - working-directory: fixtures/sample_flutter_app
+        run: flutter analyze
+      - working-directory: fixtures/sample_flutter_app
+        run: flutter test
+
+  change-flow-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.1
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - working-directory: fixtures/sample_flutter_app
+        run: flutter pub get
+      # Runs the Point & Fix generate -> validate -> apply -> revert flow with a
+      # deterministic fake Codex provider and the real Flutter validation gate.
+      - run: pnpm --filter @devpilot/agent test
+        env:
+          DEVPILOT_SMOKE_WITH_FLUTTER: '1'
 
   desktop-rust:
     runs-on: windows-latest

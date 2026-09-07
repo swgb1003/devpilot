@@ -1,0 +1,21 @@
+name: sample_flutter_app
+description: >-
+  Deterministic Flutter target for DevPilot's Point & Fix change-flow smoke.
+  Kept intentionally small: a ValueKey button, a text field, and a Row that
+  overflows so validation and screenshot code have something real to act on.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.7.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

@@ -80,6 +80,7 @@ export const activityKinds = [
   'pairing.approved',
   'pairing.revoked',
   'project.registered',
+  'device.updated',
   'session.started',
   'session.stopped',
   'screenshot.captured',
@@ -155,12 +156,20 @@ export interface DataEnvelope<T> {
   readonly data: T;
 }
 
+export type AgentRunMode = 'interactive' | 'service';
+
 export interface AgentPublicConfig {
   readonly host: string;
   readonly port: number;
   readonly activityRetentionDays: number;
   readonly schemaVersion: number;
   readonly websocketPath: '/api/v1/events';
+  /**
+   * `service` when the Agent was started by the headless Scheduled Task
+   * (see scripts/install-agent-service.ps1); `interactive` for a Desktop
+   * sidecar or a hand-run dev process.
+   */
+  readonly runMode: AgentRunMode;
 }
 
 export interface PairingQrPayload {

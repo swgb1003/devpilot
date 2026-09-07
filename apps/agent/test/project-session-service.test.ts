@@ -7,10 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 import { ActivityStore } from '../src/activity-store.js';
-import {
-  isFlutterRunReady,
-  ProjectSessionService,
-} from '../src/project-session-service.js';
+import { isFlutterRunReady, ProjectSessionService } from '../src/project-session-service.js';
 
 test('recognises Android logcat output with a padded process ID as Flutter running', () => {
   assert.equal(

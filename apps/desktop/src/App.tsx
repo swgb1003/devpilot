@@ -158,15 +158,18 @@ export function App() {
   const [diagnosticsError, setDiagnosticsError] = useState<string | undefined>();
   const [isCheckingDiagnostics, setIsCheckingDiagnostics] = useState(false);
   const [agentBootstrapped, setAgentBootstrapped] = useState(() => !isTauriRuntime());
+  const [runMode, setRunMode] = useState<'interactive' | 'service' | undefined>();
 
   const refreshM4 = useCallback(async () => {
     if (isTauriRuntime() && !agentBootstrapped) return;
     try {
-      const [projectsResponse, devicesResponse, sessionResponse] = await Promise.all([
-        agentFetch('/api/v1/projects'),
-        agentFetch('/api/v1/devices'),
-        agentFetch('/api/v1/session'),
-      ]);
+      const [projectsResponse, devicesResponse, sessionResponse, configResponse] =
+        await Promise.all([
+          agentFetch('/api/v1/projects'),
+          agentFetch('/api/v1/devices'),
+          agentFetch('/api/v1/session'),
+          agentFetch('/api/v1/config'),
+        ]);
       if (!projectsResponse.ok || !devicesResponse.ok || !sessionResponse.ok)
         throw new Error('AgentのM4 APIへ接続できません。');
       const projectData = (await projectsResponse.json()) as { data: RegisteredProject[] };
@@ -176,6 +179,12 @@ export function App() {
       setDevices(deviceData.data);
       setSession(sessionData.data ?? undefined);
       setSelectedProjectId((current) => current || projectData.data[0]?.id || '');
+      if (configResponse.ok) {
+        const configData = (await configResponse.json()) as {
+          data: { runMode?: 'interactive' | 'service' };
+        };
+        setRunMode(configData.data.runMode);
+      }
     } catch (caught) {
       setM4Error(caught instanceof Error ? caught.message : 'M4の状態を取得できません。');
     }
@@ -698,6 +707,11 @@ export function App() {
           <span className={`status-pill ${health ? 'is-ready' : ''}`}>
             {health ? `Core ${health.version}` : 'Offline'}
           </span>
+          {runMode === 'service' ? (
+            <span className="status-pill is-ready" title="ヘッドレスの常時起動タスクとして稼働中">
+              サービス稼働
+            </span>
+          ) : null}
         </div>
 
         <div className="connection-content">

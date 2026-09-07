@@ -341,9 +341,8 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
         const mobileChangeSetReviewMatch = /^\/api\/v1\/mobile\/change-sets\/([^/]+)\/review$/.exec(
           url.pathname,
         );
-        const mobileChangeSetSelectionMatch = /^\/api\/v1\/mobile\/change-sets\/([^/]+)\/selection$/.exec(
-          url.pathname,
-        );
+        const mobileChangeSetSelectionMatch =
+          /^\/api\/v1\/mobile\/change-sets\/([^/]+)\/selection$/.exec(url.pathname);
         const mobileChangeSetApplyMatch = /^\/api\/v1\/mobile\/change-sets\/([^/]+)\/apply$/.exec(
           url.pathname,
         );
@@ -581,12 +580,13 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
           }
           if (mobileChangeSetReview) {
             const path = url.searchParams.get('path');
-            if (!path) throw new AgentError({
-              code: 'REQUEST_INVALID',
-              message: 'レビューするファイルの path が必要です。',
-              status: 400,
-              action: 'CHECK_REQUEST',
-            });
+            if (!path)
+              throw new AgentError({
+                code: 'REQUEST_INVALID',
+                message: 'レビューするファイルの path が必要です。',
+                status: 400,
+                action: 'CHECK_REQUEST',
+              });
             sendJson(request, response, config, 200, {
               data: changes.reviewFile(mobileChangeSetReviewMatch![1]!, path),
             });
@@ -594,7 +594,10 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
           }
           if (mobileChangeSetSelection) {
             const input = (await readJson(request)) as { selectedPaths?: unknown };
-            if (!Array.isArray(input.selectedPaths) || !input.selectedPaths.every((path) => typeof path === 'string')) {
+            if (
+              !Array.isArray(input.selectedPaths) ||
+              !input.selectedPaths.every((path) => typeof path === 'string')
+            ) {
               throw new AgentError({
                 code: 'REQUEST_INVALID',
                 message: 'selectedPaths はファイルパスの配列で指定してください。',
@@ -765,6 +768,7 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
             activityRetentionDays: config.activityRetentionDays,
             schemaVersion: activities.schemaVersion(),
             websocketPath: '/api/v1/events',
+            runMode: config.runMode,
           };
           sendJson(request, response, config, 200, { data: publicConfig });
           return;
@@ -796,6 +800,12 @@ export function createAgentServer(options: CreateAgentServerOptions = {}): Serve
           action: 'CHECK_REQUEST',
         });
       } catch (error) {
+        // Keep the client response safe, but retain enough local evidence to
+        // diagnose unexpected Agent failures without reproducing a user action.
+        // Expected, typed API errors are already safe and actionable responses.
+        if (!(error instanceof AgentError)) {
+          console.error(`[DevPilot Agent ${traceId}]`, error);
+        }
         const normalized = toErrorResponse(error, traceId);
         sendJson(request, response, config, normalized.status, normalized.body);
       }

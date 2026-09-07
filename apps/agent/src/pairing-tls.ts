@@ -90,7 +90,7 @@ function withFingerprint(cert: string, key: string): PairingTlsMaterial {
   };
 }
 
-function isPrivateIpv4(address: string): boolean {
+export function isPrivateIpv4(address: string): boolean {
   const parts = address.split('.').map((part) => Number.parseInt(part, 10));
   if (
     parts.length !== 4 ||
@@ -101,6 +101,10 @@ function isPrivateIpv4(address: string): boolean {
   return (
     parts[0] === 10 ||
     (parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31) ||
-    (parts[0] === 192 && parts[1] === 168)
+    (parts[0] === 192 && parts[1] === 168) ||
+    // RFC 6598 shared address space (100.64.0.0/10). Tailscale and other
+    // WireGuard meshes assign phone-reachable addresses from this range, so a
+    // headless Agent can be paired from outside the local Wi-Fi.
+    (parts[0] === 100 && parts[1]! >= 64 && parts[1]! <= 127)
   );
 }

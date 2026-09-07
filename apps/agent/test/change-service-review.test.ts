@@ -13,7 +13,12 @@ test('file selection resets validation and review exposes a bounded line diff', 
   const directory = mkdtempSync(join(tmpdir(), 'devpilot-change-review-'));
   const databasePath = join(directory, 'devpilot.sqlite3');
   const activities = new ActivityStore(databasePath);
-  const changes = new ChangeService(databasePath, activities, undefined as never, undefined as never);
+  const changes = new ChangeService(
+    databasePath,
+    activities,
+    undefined as never,
+    undefined as never,
+  );
   context.after(() => {
     changes.close();
     activities.close();
@@ -43,13 +48,36 @@ test('file selection resets validation and review exposes a bounded line diff', 
      (change_set_id,path,before_sha256,after_sha256,before_content,after_content,additions,deletions,selected)
      VALUES (?,?,?,?,?,?,?,?,?)`,
   );
-  insert.run(changeSetId, 'lib/one.dart', 'before-1', 'after-1', 'final color = red;', 'final color = blue;', 1, 1, 1);
-  insert.run(changeSetId, 'lib/two.dart', 'before-2', 'after-2', 'void old() {}', 'void next() {}', 1, 1, 1);
+  insert.run(
+    changeSetId,
+    'lib/one.dart',
+    'before-1',
+    'after-1',
+    'final color = red;',
+    'final color = blue;',
+    1,
+    1,
+    1,
+  );
+  insert.run(
+    changeSetId,
+    'lib/two.dart',
+    'before-2',
+    'after-2',
+    'void old() {}',
+    'void next() {}',
+    1,
+    1,
+    1,
+  );
   database.close();
 
   const selected = changes.selectFiles(changeSetId, ['lib/two.dart']);
   assert.equal(selected.validation.state, 'not_run');
-  assert.deepEqual(selected.files.filter((file) => file.selected).map((file) => file.path), ['lib/two.dart']);
+  assert.deepEqual(
+    selected.files.filter((file) => file.selected).map((file) => file.path),
+    ['lib/two.dart'],
+  );
 
   const review = changes.reviewFile(changeSetId, 'lib/one.dart');
   assert.match(review.diff, /- 1: final color = red;/);

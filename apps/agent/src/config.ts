@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 
+import { isPrivateIpv4 } from './pairing-tls.js';
+
 export interface AgentConfig {
   readonly host: '127.0.0.1' | '0.0.0.0';
   readonly port: number;
@@ -12,6 +14,33 @@ export interface AgentConfig {
   readonly allowedOrigins: readonly string[];
   readonly tlsCertificatePath?: string;
   readonly tlsKeyPath?: string;
+  /**
+   * Extra reachable IPv4 hosts to advertise in the pairing QR, e.g. a Tailscale
+   * / WireGuard address so a phone off the local Wi-Fi can still reach the
+   * headless Agent. Empty by default; the pairing nonce, Desktop approval, and
+   * TLS fingerprint pin still gate every connection.
+   */
+  readonly pairingExtraHosts: readonly string[];
+  /**
+   * `host:port` targets the Agent runs `adb connect` against before enumerating
+   * devices, so a phone reachable only over wireless ADB / a tunnel can host the
+   * `flutter run` session. Empty by default.
+   */
+  readonly adbConnectTargets: readonly string[];
+  /** `service` when launched by the headless Scheduled Task, else `interactive`. */
+  readonly runMode: 'interactive' | 'service';
+}
+
+function parseList(value: string | undefined): readonly string[] {
+  if (!value) return [];
+  return [
+    ...new Set(
+      value
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 function parseInteger(value: string | undefined, fallback: number, name: string): number {
@@ -60,6 +89,22 @@ export function loadAgentConfig(
     throw new Error('DEVPILOT_ACTIVITY_RETENTION_DAYS must be between 1 and 365.');
   }
 
+  const pairingExtraHosts = parseList(environment.DEVPILOT_PAIRING_EXTRA_HOSTS);
+  for (const host of pairingExtraHosts) {
+    if (!isPrivateIpv4(host)) {
+      throw new Error(
+        `DEVPILOT_PAIRING_EXTRA_HOSTS entry "${host}" must be a private or shared-space IPv4 address.`,
+      );
+    }
+  }
+
+  const adbConnectTargets = parseList(environment.DEVPILOT_ADB_CONNECT_TARGETS);
+  for (const target of adbConnectTargets) {
+    if (!/^[A-Za-z0-9.-]+:\d{1,5}$/.test(target)) {
+      throw new Error(`DEVPILOT_ADB_CONNECT_TARGETS entry "${target}" must be in host:port form.`);
+    }
+  }
+
   const configuredDataDirectory = environment.DEVPILOT_DATA_DIR ?? '.devpilot-data';
   const dataDirectory = isAbsolute(configuredDataDirectory)
     ? configuredDataDirectory
@@ -84,6 +129,9 @@ export function loadAgentConfig(
     databasePath: join(dataDirectory, 'devpilot.sqlite3'),
     activityRetentionDays,
     desktopToken,
+    pairingExtraHosts,
+    adbConnectTargets,
+    runMode: environment.DEVPILOT_RUN_MODE === 'service' ? 'service' : 'interactive',
     allowedOrigins: [
       `http://127.0.0.1:${port}`,
       'http://127.0.0.1:5173',

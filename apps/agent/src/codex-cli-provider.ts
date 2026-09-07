@@ -23,6 +23,15 @@ export interface CodexProposal {
   readonly files: readonly CodexContextFile[];
 }
 
+/**
+ * The single AI capability the v0.1 change flow needs. `CodexCliProvider` is the
+ * only production implementation; tests and the deterministic CI smoke inject a
+ * fake so the flow is exercised without the `codex` CLI.
+ */
+export interface AiProposalProvider {
+  propose(context: CodexFixContext): Promise<CodexProposal>;
+}
+
 const proposalSchema = {
   type: 'object',
   additionalProperties: false,
@@ -52,7 +61,7 @@ const proposalSchema = {
 // allowance) while giving the model enough time to finish a complete response.
 export const codexProposalTimeoutMs = 300_000;
 
-export class CodexCliProvider {
+export class CodexCliProvider implements AiProposalProvider {
   async propose(context: CodexFixContext): Promise<CodexProposal> {
     const workingDirectory = mkdtempSync(join(tmpdir(), 'devpilot-codex-'));
     const outputPath = join(workingDirectory, 'proposal.json');
@@ -101,7 +110,14 @@ export class CodexCliProvider {
       );
     } finally {
       // The directory contains only the bounded, temporary context created above.
-      rmSync(workingDirectory, { recursive: true, force: true, maxRetries: 2 });
+      // On Windows, Codex may have only just released a descendant process and
+      // the directory can briefly be locked. Cleanup must never hide the useful
+      // proposal or Codex diagnostic that was produced above.
+      try {
+        rmSync(workingDirectory, { recursive: true, force: true, maxRetries: 2 });
+      } catch {
+        // A later OS temp-folder cleanup can safely remove this bounded data.
+      }
     }
   }
 }

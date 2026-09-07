@@ -1,0 +1,14 @@
+# Normalise line endings so Prettier's `endOfLine` check is stable across
+# Windows checkouts (core.autocrlf) and CI.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.docx binary
+*.keystore binary
+*.jar binary
+*.bat text eol=crlf
+*.ps1 text eol=crlf

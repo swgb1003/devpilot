@@ -12,7 +12,9 @@ const config = loadAgentConfig();
 const activities = new ActivityStore(config.databasePath);
 // 127.0.0.1 is reachable only through `adb reverse`. Its certificate pin and
 // pairing nonce make advertising it safe, while LAN candidates remain present.
-const pairingHosts = ['127.0.0.1', ...privateIpv4Addresses()];
+const pairingHosts = ['127.0.0.1', ...privateIpv4Addresses(), ...config.pairingExtraHosts].filter(
+  (host, index, all) => all.indexOf(host) === index,
+);
 const pairingTls = await loadOrCreatePairingTls(config.dataDirectory, pairingHosts);
 const pairings = new PairingService(
   new PairingStore(config.databasePath, loadOrCreatePairingTokenKey(config.dataDirectory)),
@@ -23,7 +25,9 @@ const pairings = new PairingService(
     fingerprint: pairingTls.fingerprint,
   },
 );
-const projectSessions = new ProjectSessionService(config.databasePath, activities);
+const projectSessions = new ProjectSessionService(config.databasePath, activities, {
+  adbConnectTargets: config.adbConnectTargets,
+});
 activities.purgeOlderThan(config.activityRetentionDays);
 activities.append({
   kind: 'agent.started',

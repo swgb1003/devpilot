@@ -25,7 +25,11 @@ import type {
 } from '@devpilot/contracts';
 
 import { ActivityStore } from './activity-store.js';
-import { CodexCliProvider, type CodexContextFile } from './codex-cli-provider.js';
+import {
+  CodexCliProvider,
+  type AiProposalProvider,
+  type CodexContextFile,
+} from './codex-cli-provider.js';
 import { AgentError } from './errors.js';
 import { FixRequestService } from './fix-request-service.js';
 import { ProjectSessionService } from './project-session-service.js';
@@ -68,7 +72,7 @@ export class ChangeService {
     private readonly activities: ActivityStore,
     private readonly fixRequests: FixRequestService,
     private readonly projectSessions: ProjectSessionService,
-    private readonly codex = new CodexCliProvider(),
+    private readonly codex: AiProposalProvider = new CodexCliProvider(),
   ) {
     this.#database = new DatabaseSync(databasePath);
     this.#database.exec('PRAGMA busy_timeout = 5000;');
